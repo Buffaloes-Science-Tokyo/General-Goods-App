@@ -5,7 +5,8 @@ import type { Sale, SaleItem } from '../types'
 import { saleCostKey, type Costing } from '../costing'
 import { channelLabel, channelOf, PAYMENT_LABEL, saleProfit } from '../metrics'
 import { BarList, ColumnChart, ShareBar, type ColumnDatum, type Share } from '../components/charts'
-import { StockBadge } from '../components/ui'
+import { Modal, StockBadge, toast, toastError } from '../components/ui'
+import { downloadSalesReport, REPORT_CHANNEL_LABEL, summarizeReport, type ReportChannel } from '../report'
 
 type Range = 'today' | '7d' | '30d' | 'all'
 const RANGE_LABEL: Record<Range, string> = { today: '今日', '7d': '直近7日', '30d': '直近30日', all: '全期間' }
@@ -60,6 +61,7 @@ export function DashboardPage() {
   const [rankBy, setRankBy] = useState<'revenue' | 'profit' | 'qty'>('revenue')
   const [dim, setDim] = useState<Dim>('category')
   const [channel, setChannel] = useState<'all' | 'store' | 'online'>('all')
+  const [reportOpen, setReportOpen] = useState(false)
 
   const valid = useMemo(
     () => allSales.filter((s) => !s.voided && (channel === 'all' || channelOf(s) === channel)),
@@ -270,7 +272,9 @@ export function DashboardPage() {
             </button>
           ))}
         </div>
+        <button className="btn" onClick={() => setReportOpen(true)}>報告書(pptx)</button>
       </div>
+      {reportOpen && <ReportDialog initialChannel={channel} onClose={() => setReportOpen(false)} />}
 
       <div className="kpis">
         <div className="card kpi">
@@ -426,5 +430,98 @@ function Tip({ title, revenue, count }: { title: string; revenue: number; count:
       <div className="t-row">売上 <b>{yen(revenue)}</b></div>
       <div className="t-row">取引 <b>{count}件</b></div>
     </>
+  )
+}
+
+/** 期間を指定して売上報告の PowerPoint を作る */
+function ReportDialog({ initialChannel, onClose }: { initialChannel: ReportChannel; onClose: () => void }) {
+  const { sales, products, stock, costing, settings } = useStore()
+  const today = dayKey(new Date())
+  const shift = (days: number) => {
+    const d = new Date()
+    d.setDate(d.getDate() + days)
+    return dayKey(d)
+  }
+  const [from, setFrom] = useState(shift(-6))
+  const [to, setTo] = useState(today)
+  const [channel, setChannel] = useState<ReportChannel>(initialChannel)
+  const [busy, setBusy] = useState(false)
+
+  const now = new Date()
+  const presets: { label: string; from: string; to: string }[] = [
+    { label: '今日', from: today, to: today },
+    { label: '直近7日', from: shift(-6), to: today },
+    { label: '直近30日', from: shift(-29), to: today },
+    { label: '今月', from: dayKey(new Date(now.getFullYear(), now.getMonth(), 1)), to: today },
+    { label: '先月', from: dayKey(new Date(now.getFullYear(), now.getMonth() - 1, 1)), to: dayKey(new Date(now.getFullYear(), now.getMonth(), 0)) },
+  ]
+  const invalid = !from || !to || from > to
+  const data = useMemo(
+    () => (invalid ? null : summarizeReport({ from, to, channel, shopName: settings.shopName, sales, products, stock, costing })),
+    [invalid, from, to, channel, settings.shopName, sales, products, stock, costing],
+  )
+
+  async function create() {
+    if (!data) return
+    setBusy(true)
+    try {
+      await downloadSalesReport(data, `売上報告_${from === to ? from : `${from}_${to}`}.pptx`)
+      toast('報告書を作成しました')
+      onClose()
+    } catch (e) {
+      console.error(e)
+      toastError('報告書を作成できませんでした')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="売上報告書を作成（PowerPoint）" onClose={onClose}>
+      <div className="row" style={{ marginBottom: 12 }}>
+        {presets.map((p) => (
+          <button key={p.label} className="btn sm" aria-pressed={from === p.from && to === p.to} onClick={() => (setFrom(p.from), setTo(p.to))}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <label className="field">
+          開始日
+          <input type="date" className="input" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} />
+        </label>
+        <span style={{ alignSelf: 'flex-end', paddingBottom: 8 }}>〜</span>
+        <label className="field">
+          終了日
+          <input type="date" className="input" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
+        </label>
+      </div>
+      <div className="seg" role="group" aria-label="対象" style={{ marginBottom: 12 }}>
+        {(Object.keys(REPORT_CHANNEL_LABEL) as ReportChannel[]).map((c) => (
+          <button key={c} aria-pressed={channel === c} onClick={() => setChannel(c)}>
+            {REPORT_CHANNEL_LABEL[c]}
+          </button>
+        ))}
+      </div>
+      <div className="muted small">
+        {invalid ? (
+          <span style={{ color: 'var(--critical)' }}>開始日は終了日以前にしてください</span>
+        ) : (
+          data && (
+            <>
+              {data.cur.count}件・売上 <b style={{ color: 'var(--ink)' }}>{yen(data.cur.revenue)}</b>・粗利 {yen(data.cur.profit)}
+              <br />
+              サマリー・売上の推移・商品ランキング・内訳・時間帯別・割引・在庫アラートのスライドを作成します
+            </>
+          )
+        )}
+      </div>
+      <div className="actions">
+        <button className="btn ghost" onClick={onClose}>閉じる</button>
+        <button className="btn primary" onClick={create} disabled={invalid || busy}>
+          {busy ? '作成中…' : 'pptxを作成'}
+        </button>
+      </div>
+    </Modal>
   )
 }
