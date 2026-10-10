@@ -1,5 +1,6 @@
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless'
 import type { SyncChanges, SyncRequest, SyncResponse } from '../src/types'
+import { verifySession, type AuthEnv } from './auth.js'
 
 /**
  * 同期 API 本体（Web 標準の Request → Response）。
@@ -11,7 +12,7 @@ import type { SyncChanges, SyncRequest, SyncResponse } from '../src/types'
  *   （これがないと「小さい seq が後からコミットされて取りこぼす」ことがある）
  */
 
-type Env = { DATABASE_URL?: string; SYNC_TOKEN?: string }
+type Env = AuthEnv & { DATABASE_URL?: string }
 
 const SCHEMA = [
   `create sequence if not exists sync_seq`,
@@ -160,13 +161,6 @@ function ensureSchema(sql: NeonQueryFunction<false, false>) {
   return schemaReady
 }
 
-function safeEqual(a: string, b: string) {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return diff === 0
-}
-
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } })
 
@@ -189,12 +183,10 @@ export async function handleSync(
   makeSql: (url: string) => NeonQueryFunction<false, false> = neon,
 ): Promise<Response> {
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405)
-  if (!env.DATABASE_URL || !env.SYNC_TOKEN) {
-    return json({ error: 'サーバーに DATABASE_URL / SYNC_TOKEN が設定されていません' }, 500)
+  if (!env.DATABASE_URL || !env.SYNC_TOKEN || !env.APP_PASSWORD) {
+    return json({ error: 'サーバーに DATABASE_URL / SYNC_TOKEN / APP_PASSWORD が設定されていません' }, 500)
   }
-  const auth = req.headers.get('authorization') ?? ''
-  const token = auth.replace(/^Bearer\s+/i, '')
-  if (!token || !safeEqual(token, env.SYNC_TOKEN)) return json({ error: 'unauthorized' }, 401)
+  if (!(await verifySession(req, env))) return json({ error: 'unauthorized' }, 401)
 
   let body: unknown
   try {

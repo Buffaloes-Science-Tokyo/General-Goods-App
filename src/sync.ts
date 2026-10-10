@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { applySyncResult, collectOutbox, getState, pendingCount, subscribeStore } from './store'
+import { applySyncResult, clearSyncToken, collectOutbox, getState, pendingCount, setSyncToken, subscribeStore } from './store'
 import type { SyncRequest, SyncResponse } from './types'
 
 export type SyncStatus =
@@ -10,6 +10,7 @@ export type SyncStatus =
   | { kind: 'error'; message: string }
 
 const ENDPOINT = import.meta.env.VITE_SYNC_ENDPOINT || '/api/sync'
+const LOGIN_ENDPOINT = import.meta.env.VITE_LOGIN_ENDPOINT || '/api/login'
 const INTERVAL_MS = 30_000
 const DEBOUNCE_MS = 1_500
 
@@ -29,6 +30,38 @@ export function useSyncStatus(): SyncStatus {
     },
     () => status,
   )
+}
+
+/** ログイン画面に出すメッセージ（パスワード変更などでログアウトされたとき） */
+let logoutReason = ''
+export const takeLogoutReason = () => {
+  const r = logoutReason
+  logoutReason = ''
+  return r
+}
+
+/** パスワードでログインし、成功したらトークンを保存して同期を始める。失敗時はメッセージを返す */
+export async function login(password: string): Promise<string | null> {
+  if (!navigator.onLine) return 'オフラインです。初回のログインにはインターネット接続が必要です'
+  try {
+    const res = await fetch(LOGIN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { token?: string; error?: string }
+    if (res.status === 401) return 'パスワードが違います'
+    if (!res.ok || !data.token) return `サーバーエラー (${res.status}) ${data.error ?? ''}`.trim()
+    setSyncToken(data.token)
+    return null
+  } catch {
+    return 'サーバーに接続できません'
+  }
+}
+
+export function logout() {
+  clearSyncToken()
+  setStatus({ kind: 'disabled' })
 }
 
 let running: Promise<void> | null = null
@@ -65,13 +98,18 @@ async function syncOnce() {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${sync.token}` },
       body: JSON.stringify(body),
     })
-    if (res.status === 401) return setStatus({ kind: 'error', message: '合言葉が違います' })
+    if (res.status === 401) {
+      // パスワードが変更された等でトークンが無効。ログイン画面に戻す（データと送信待ちは端末に残る）
+      if (getState().sync.token !== sync.token) return
+      logoutReason = 'パスワードが変更されたため、ログインし直してください'
+      return logout()
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       return setStatus({ kind: 'error', message: `サーバーエラー (${res.status}) ${text.slice(0, 120)}` })
     }
     const data = (await res.json()) as SyncResponse
-    // 送信中に合言葉が変わっていたら結果は捨てる
+    // 送信中にログインし直していたら結果は捨てる
     if (getState().sync.token !== sync.token) return
     applySyncResult(sent, data.changes, data.cursor)
     const sentCount = sent.products.length + sent.sales.length + sent.stockEvents.length

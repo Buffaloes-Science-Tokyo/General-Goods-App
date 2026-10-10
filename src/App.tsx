@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useStore } from './store'
+import { isSessionToken, useStore } from './store'
 import { syncNow, useSyncStatus } from './sync'
 import { RegisterPage } from './pages/Register'
 import { ProductsPage } from './pages/Products'
@@ -8,6 +8,7 @@ import { OnlinePage } from './pages/Online'
 import { DiscountsPage } from './pages/Discounts'
 import { DashboardPage } from './pages/Dashboard'
 import { SettingsPage } from './pages/Settings'
+import { LoginPage } from './pages/Login'
 import { ToastHost } from './components/ui'
 
 const TABS = [
@@ -30,7 +31,7 @@ function SyncIndicator({ onClick }: { onClick: () => void }) {
   const status = useSyncStatus()
   const { pending } = useStore()
   const map = {
-    disabled: { dot: 'var(--muted)', text: '端末のみ' },
+    disabled: { dot: 'var(--muted)', text: '待機中' },
     offline: { dot: 'var(--warning)', text: 'オフライン' },
     syncing: { dot: 'var(--accent)', text: '同期中' },
     ok: { dot: 'var(--good)', text: '同期済み' },
@@ -52,6 +53,11 @@ function SyncIndicator({ onClick }: { onClick: () => void }) {
 }
 
 export default function App() {
+  const { sync } = useStore()
+  return isSessionToken(sync.token) ? <MainApp /> : <LoginPage />
+}
+
+function MainApp() {
   const [tab, setTab] = useState<TabId>(readHash)
   const { settings, persistError } = useStore()
 

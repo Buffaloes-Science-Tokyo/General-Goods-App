@@ -98,8 +98,13 @@ async function readPersisted(): Promise<LocalState | null> {
   const saved: unknown = await idbGet(IDB_KEY)
   if (!isState(saved)) return null
   // 以前のバージョンで保存したデータに無い項目を補う
-  return { ...emptyState(), ...saved, discountRules: saved.discountRules ?? {}, outbox: { ...emptyOutbox(), ...saved.outbox } }
+  // 以前の「合言葉」がそのまま入っている場合はログイン済みとみなさず、パスワードでのログインを求める
+  const sync = isSessionToken(saved.sync.token) ? saved.sync : { ...saved.sync, token: '' }
+  return { ...emptyState(), ...saved, sync, discountRules: saved.discountRules ?? {}, outbox: { ...emptyOutbox(), ...saved.outbox } }
 }
+
+/** ログインで受け取るトークンの形式（発行時刻.署名）か */
+export const isSessionToken = (token: string) => /^\d+\.[A-Za-z0-9_-]+$/.test(token)
 
 /** 起動時に IndexedDB から読み込む */
 export async function initStore() {
@@ -498,8 +503,13 @@ export function setDeviceCode(code: string) {
   commit({ ...state, device: { ...state.device, code } })
 }
 
+/** ログアウト：トークンだけ消す。この端末のデータと送信待ちは残し、次にログインしたときに送る */
+export function clearSyncToken() {
+  commit({ ...state, sync: { ...state.sync, token: '' } })
+}
+
 export function setSyncToken(token: string) {
-  // 合言葉を変えたら別のクラウドかもしれないので、全件受信し直し、この端末のデータも全件送り直す
+  // ログインし直したら別のクラウドかもしれないので、全件受信し直し、この端末のデータも全件送り直す
   // （サーバー側は ID で重複を除くので、同じデータを送っても増えない）
   const s = state
   commit({

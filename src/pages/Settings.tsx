@@ -5,11 +5,10 @@ import {
   loadSample,
   resetLocal,
   setDeviceCode,
-  setSyncToken,
   updateShopName,
   useStore,
 } from '../store'
-import { syncNow, useSyncStatus } from '../sync'
+import { logout, syncNow, useSyncStatus } from '../sync'
 import { dateTime, downloadText } from '../format'
 import { toast, toastError } from '../components/ui'
 import { FeeSettingsCard } from '../components/FeeSettingsCard'
@@ -19,11 +18,10 @@ export function SettingsPage() {
   const status = useSyncStatus()
   const [shopName, setShopName] = useState(settings.shopName)
   const [code, setCode] = useState(device.code)
-  const [token, setToken] = useState(sync.token)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const statusText =
-    status.kind === 'disabled' ? '未設定（この端末だけで動作中）'
+    status.kind === 'disabled' ? '待機中'
     : status.kind === 'offline' ? 'オフライン（復帰したら自動で送信します）'
     : status.kind === 'syncing' ? '同期中…'
     : status.kind === 'ok' ? '同期済み'
@@ -38,34 +36,9 @@ export function SettingsPage() {
       <div className="card" style={{ marginBottom: 16 }}>
         <h2>クラウド同期</h2>
         <p className="muted small" style={{ marginTop: 0 }}>
-          レジ操作はオフラインでも常に使えます。合言葉を設定すると、オンラインのときに自動でクラウド（Neon）へ送信し、
-          他の端末の販売・在庫の変更も受け取ります。全端末で同じ合言葉（サーバーの SYNC_TOKEN）を入力してください。
+          レジ操作はオフラインでも常に使えます。オンラインのときに自動でクラウド（Neon）へ送信し、
+          他の端末の販売・在庫の変更も受け取ります。
         </p>
-        <div className="form-grid">
-          <label className="field full">
-            合言葉
-            <div className="row">
-              <input
-                className="input grow"
-                type="password"
-                autoComplete="off"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="SYNC_TOKEN"
-              />
-              <button
-                className="btn primary"
-                disabled={token === sync.token}
-                onClick={() => {
-                  setSyncToken(token.trim())
-                  toast(token.trim() ? '同期を開始します' : '同期をオフにしました')
-                }}
-              >
-                保存
-              </button>
-            </div>
-          </label>
-        </div>
         <table className="tbl" style={{ marginTop: 12 }}>
           <tbody>
             <tr><td>状態</td><td>{statusText}</td></tr>
@@ -74,7 +47,18 @@ export function SettingsPage() {
           </tbody>
         </table>
         <div className="row" style={{ marginTop: 12 }}>
-          <button className="btn" disabled={!sync.token} onClick={() => void syncNow()}>今すぐ同期</button>
+          <button className="btn" onClick={() => void syncNow()}>今すぐ同期</button>
+          <button
+            className="btn danger"
+            onClick={() => {
+              const msg = pending
+                ? `まだクラウドに送信していない変更が ${pending}件あります（端末には残り、次にログインしたときに送信します）。ログアウトしますか？`
+                : 'ログアウトしますか？'
+              if (confirm(msg)) logout()
+            }}
+          >
+            ログアウト
+          </button>
         </div>
       </div>
 
