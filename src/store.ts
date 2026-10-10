@@ -6,6 +6,7 @@ import type {
   OnlineOrderInfo,
   PaymentMethod,
   Product,
+  RemoteSettings,
   Sale,
   SaleItem,
   ShopSettings,
@@ -141,6 +142,8 @@ export type View = {
   fees: FeeSettings
   device: LocalState['device']
   sync: LocalState['sync']
+  /** 遠方物販の設定と、商品ごとの売れた数・残り（持ち出し数 − この物販で売れた数）。未設定なら null */
+  remote: { settings: RemoteSettings; left: Map<string, number>; sold: Map<string, number> } | null
   pending: number
   persistError: string | null
 }
@@ -176,6 +179,7 @@ function buildView(s: LocalState): View {
     fees: { ...DEFAULT_FEES, ...s.settings.fees },
     device: s.device,
     sync: s.sync,
+    remote: buildRemote(s),
     pending:
       s.outbox.products.length +
       s.outbox.sales.length +
@@ -185,6 +189,25 @@ function buildView(s: LocalState): View {
     persistError,
   }
 }
+
+function buildRemote(s: LocalState): View['remote'] {
+  const r = s.settings.remote
+  if (!r) return null
+  const sold = remoteSold(s, r.eventId)
+  const left = new Map(Object.entries(r.allocations).map(([id, n]) => [id, n - (sold.get(id) ?? 0)]))
+  return { settings: r, left, sold }
+}
+
+/** その遠方物販で売れた数（取り消した会計は除く） */
+function remoteSold(s: LocalState, eventId: string) {
+  const sold = new Map<string, number>()
+  for (const sale of Object.values(s.sales)) {
+    if (sale.voided || sale.remoteEvent !== eventId) continue
+    for (const i of sale.items) sold.set(i.productId, (sold.get(i.productId) ?? 0) + i.qty)
+  }
+  return sold
+}
+
 
 function getView(): View {
   if (!viewCache || viewCache.src !== state || viewCache.err !== persistError) {
@@ -250,6 +273,13 @@ function withSale(s: LocalState, sale: Sale): LocalState {
 }
 
 export const stockOf = (id: string) => getView().stock.get(id) ?? 0
+
+/** レジで売れる数。遠方モード中は持ち出し分の残りも上限になる（持ち出していない商品は 0） */
+export function sellableOf(id: string) {
+  const { stock, remote } = getView()
+  const left = stock.get(id) ?? 0
+  return remote?.settings.active ? Math.min(left, remote.left.get(id) ?? 0) : left
+}
 export const avgCostOf = (id: string) => getView().costing.byProduct.get(id)?.avg ?? state.products[id]?.cost ?? 0
 
 // ---------- 商品 ----------
@@ -317,7 +347,7 @@ export function checkout(
   for (const line of lines) {
     const p = state.products[line.productId]
     if (!p || p.deleted) return { ok: false, error: '削除された商品がカートに含まれています' }
-    const left = stockOf(p.id)
+    const left = sellableOf(p.id)
     if (left < line.qty) return { ok: false, error: `「${fullName(p)}」の在庫が足りません（残り${left}）` }
     items.push({
       productId: p.id, name: p.name, category: p.category, type: p.type ?? '', size: p.size ?? '',
@@ -338,9 +368,11 @@ export function checkout(
 
   const at = now()
   const { device } = state
+  const remote = state.settings.remote
   const sale: Sale = {
     id: uid(),
     receiptNo: `${device.code}-${String(device.nextReceipt).padStart(4, '0')}`,
+    ...(remote?.active ? { remoteEvent: remote.eventId } : {}),
     at,
     deviceId: device.id,
     items,
@@ -495,6 +527,15 @@ export function updateFees(fees: FeeSettings) {
   commit({
     ...state,
     settings: { ...state.settings, fees, updatedAt: now() },
+    outbox: { ...state.outbox, settings: true },
+  })
+}
+
+/** 遠方物販の設定（全端末で共有） */
+export function updateRemote(remote: RemoteSettings) {
+  commit({
+    ...state,
+    settings: { ...state.settings, remote, updatedAt: now() },
     outbox: { ...state.outbox, settings: true },
   })
 }

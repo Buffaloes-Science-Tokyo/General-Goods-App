@@ -81,6 +81,8 @@ export type Sale = {
   receiptNo: string
   /** 店頭 or オンライン（以前のデータは店頭） */
   channel?: SalesChannel
+  /** 遠方物販のレジで会計したとき、その物販の ID（RemoteSettings.eventId） */
+  remoteEvent?: string
   online?: OnlineOrderInfo
   at: string
   deviceId: string
@@ -167,10 +169,28 @@ export type FeeSettings = {
   minProfitPercent: number
 }
 
+/**
+ * 遠方物販の設定（全端末で共有）。
+ * 商品ごとに持ち出し数を決め、遠方モード中のレジではその商品だけを表示する。
+ * 残り＝持ち出し数 − この物販で売れた数（取消は戻る）。売れた分は通常どおり本体の在庫からも減る
+ */
+export type RemoteSettings = {
+  /** 遠方モード中か */
+  active: boolean
+  /** 物販ごとの ID。開始するたびに新しくなり、売れた数はこの ID の会計だけで数える */
+  eventId: string
+  /** 物販の名前（例：大阪イベント） */
+  name: string
+  /** 商品ID → 持ち出し数 */
+  allocations: Record<string, number>
+}
+
 export type ShopSettings = {
   shopName: string
   /** 以前のデータには無い */
   fees?: FeeSettings
+  /** 以前のデータには無い */
+  remote?: RemoteSettings
   updatedAt: string
 }
 

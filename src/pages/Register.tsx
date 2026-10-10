@@ -9,7 +9,13 @@ const QUICK_CASH = [1000, 5000, 10000]
 const NO_MANUAL: ManualDiscount = { kind: 'yen', value: 0 }
 
 export function RegisterPage() {
-  const { products, stock, discountRules } = useStore()
+  const { products, stock, discountRules, remote } = useStore()
+  // 遠方モード中は持ち出した商品だけを表示し、持ち出し分の残りも上限にする
+  const remoteOn = remote?.settings.active ? remote : null
+  const leftOf = (id: string) => {
+    const left = stock.get(id) ?? 0
+    return remoteOn ? Math.min(left, remoteOn.left.get(id) ?? 0) : left
+  }
   const [cat, setCat] = useState<string>('すべて')
   const [query, setQuery] = useState('')
   const [cart, setCart] = useState<CartLine[]>([])
@@ -21,7 +27,7 @@ export function RegisterPage() {
   const [received, setReceived] = useState(0)
   const [done, setDone] = useState<Sale | null>(null)
 
-  const sellable = products.filter((p) => p.active)
+  const sellable = products.filter((p) => p.active && (!remoteOn || (remoteOn.settings.allocations[p.id] ?? 0) > 0))
   const categories = useMemo(() => ['すべて', ...new Set(sellable.map((p) => p.category || '未分類'))], [sellable])
   const shown = sellable.filter(
     (p) =>
@@ -40,7 +46,7 @@ export function RegisterPage() {
   const qtyInCart = (id: string) => cart.find((c) => c.productId === id)?.qty ?? 0
 
   function add(id: string, delta = 1) {
-    const left = stock.get(id) ?? 0
+    const left = leftOf(id)
     const cur = cart.find((c) => c.productId === id)
     const nextQty = (cur?.qty ?? 0) + delta
     if (delta > 0 && nextQty > left) return toastError('在庫が足りません')
@@ -105,6 +111,12 @@ export function RegisterPage() {
   return (
     <div className="register">
       <section className="catalog">
+        {remoteOn && (
+          <div className="remote-banner">
+            遠方モード{remoteOn.settings.name && `：${remoteOn.settings.name}`}
+            <span className="small">（持ち出した商品だけを表示・在庫は持ち出し分の残り）</span>
+          </div>
+        )}
         <div className="row" style={{ marginBottom: 12 }}>
           <input
             className="input grow"
@@ -122,12 +134,14 @@ export function RegisterPage() {
         </div>
         {sellable.length === 0 ? (
           <div className="card empty">
-            商品がまだありません。「商品・在庫」タブから登録してください。
+            {remoteOn
+              ? '持ち出した商品がありません。「設定」の遠方物販で持ち出し数を入力してください。'
+              : '商品がまだありません。「商品・在庫」タブから登録してください。'}
           </div>
         ) : (
           <div className="tiles">
             {shown.map((p) => {
-              const left = stock.get(p.id) ?? 0
+              const left = leftOf(p.id)
               const inCart = qtyInCart(p.id)
               return (
                 <button key={p.id} className="tile" onClick={() => add(p.id)} disabled={left <= 0}>

@@ -341,3 +341,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .profit-check.ng { background: var(--critical-soft); border-color: transparent; }
 .profit-check.ng > .row b { color: var(--critical); }
 .profit-check .tbl td, .profit-check .tbl th { padding: 4px 6px; }
+
+/* 遠方モード中のレジ */
+.remote-banner {
+  background: var(--warning-soft);
+  border-left: 4px solid var(--warning);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+.remote-banner .small { font-weight: 400; margin-left: 6px; }
