@@ -58,3 +58,21 @@ export function compareSize(a: string, b: string) {
   if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
   return a.localeCompare(b, 'ja')
 }
+
+/** 商品名が同じ（タイプ・サイズ違い）の商品のまとまり */
+export type NameGroup<T> = { name: string; items: T[] }
+
+/** 商品名でまとめる。グループは最初に出てきた順、中身はタイプ→サイズ順 */
+export function groupByName<T extends Attrs>(list: T[]): NameGroup<T>[] {
+  const map = new Map<string, T[]>()
+  for (const x of list) {
+    const k = x.name.trim()
+    const g = map.get(k)
+    if (g) g.push(x)
+    else map.set(k, [x])
+  }
+  return [...map].map(([name, items]) => ({
+    name,
+    items: items.sort((a, b) => (a.type ?? '').localeCompare(b.type ?? '', 'ja') || compareSize(a.size ?? '', b.size ?? '')),
+  }))
+}

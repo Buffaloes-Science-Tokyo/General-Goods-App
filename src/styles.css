@@ -352,3 +352,24 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   font-weight: 600;
 }
 .remote-banner .small { font-weight: 400; margin-left: 6px; }
+
+/* ---------- 同名商品のまとまり（タイプ・サイズ違い） ---------- */
+.tile.group { border-style: dashed; }
+.tile.group.open { border-color: var(--accent); border-style: solid; }
+.variants-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--accent); font-weight: 600; }
+.tri { display: inline-block; font-size: 10px; transition: transform 0.15s; }
+.tile.group.open .tri, .tri-btn.open { transform: rotate(180deg); }
+.variant-panel {
+  grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px;
+  padding: 10px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--line);
+}
+.variant-panel .tile { min-height: 84px; }
+.tri-btn {
+  border: 0; background: none; cursor: pointer; color: var(--accent); font-size: 11px; padding: 2px 4px;
+  margin-right: 4px; transition: transform 0.15s; display: inline-block;
+}
+.tbl tr.group-row { cursor: pointer; }
+.tbl tr.group-row td { background: var(--surface-2); }
+.tbl tr.group-row .attrs { margin-top: 4px; }
+.tbl tr.variant-row td:first-child { padding-left: 34px; }
+.tbl tr.variant-row .attr:first-child { margin-left: 0; }

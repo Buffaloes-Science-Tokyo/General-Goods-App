@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { addProduct, deleteProduct, restock, revalueCost, setStock, updateProduct, useStore, type ProductInput } from '../store'
 import { previewAvg, type CostInfo } from '../costing'
 import { CHANNEL_LABEL, floorPrice } from '../pricing'
-import { compareSize, dateTime, downloadText, fullName, pct, toCsv, yen } from '../format'
+import { compareSize, dateTime, groupByName, downloadText, fullName, pct, toCsv, yen } from '../format'
 import type { Product, StockReason } from '../types'
-import { Modal, NumberInput, StockBadge, toast } from '../components/ui'
+import { Modal, NumberInput, StockBadge, toast, VariantSummary } from '../components/ui'
 
 const REASON: Record<StockReason, string> = {
   initial: '初期在庫',
@@ -37,6 +37,17 @@ export function ProductsPage() {
     if (query && !`${p.name} ${p.type} ${p.size} ${p.sku} ${p.category}`.toLowerCase().includes(query.toLowerCase())) return false
     return true
   })
+  // 商品名が同じもの（タイプ・サイズ違い）は1行にまとめ、▲で中身を表示
+  const groups = groupByName(shown)
+  const [open, setOpen] = useState<Set<string>>(new Set())
+  // 検索・絞り込み中は該当するタイプ・サイズが見えるよう全部開く
+  const autoOpen = filter !== 'all' || !!query
+  const toggleOpen = (name: string) => {
+    const next = new Set(open)
+    if (next.has(name)) next.delete(name)
+    else next.add(name)
+    setOpen(next)
+  }
 
   const totals = useMemo(() => {
     let units = 0
@@ -64,6 +75,54 @@ export function ProductsPage() {
       ])
     }
     downloadText(`在庫一覧_${new Date().toISOString().slice(0, 10)}.csv`, toCsv(rows), 'text/csv')
+  }
+
+  function productRow(p: Product, child: boolean) {
+    const s = stock.get(p.id) ?? 0
+    const avg = avgOf(p)
+    const last = costing.byProduct.get(p.id)?.lastCost
+    const margin = p.price - avg
+    return (
+      <tr key={p.id} className={`${p.active ? '' : 'inactive'}${child ? ' variant-row' : ''}`}>
+        <td>
+          <div style={{ fontWeight: 600 }}>
+            {!child && p.name}
+            {p.type && <span className="attr">{p.type}</span>}
+            {p.size && <span className="attr size">{p.size}</span>}
+          </div>
+          <div className="muted small">{p.sku}{!p.active && '・販売停止中'}</div>
+        </td>
+        <td>{p.category}</td>
+        <td className="r">
+          <NumberInput
+            value={p.price}
+            min={0}
+            onChange={(v) => updateProduct(p.id, { price: v })}
+            style={{ width: 96 }}
+            aria-label={`${fullName(p)} の販売価格`}
+          />
+          <FloorNote price={p.price} floor={floorPrice(p, avg, fees).price} />
+        </td>
+        <td className="r num">
+          {costYen(avg)}
+          {last != null && Math.round(last) !== Math.round(avg) && (
+            <div className="muted small">直近仕入 {yen(last)}</div>
+          )}
+        </td>
+        <td className="r num">
+          {costYen(margin)}
+          <div className="muted small">{p.price ? pct(margin / p.price) : '—'}</div>
+        </td>
+        <td className="r num">
+          <div style={{ fontWeight: 700, fontSize: 16 }}>{s}</div>
+          <StockBadge stock={s} low={p.lowStock} />
+        </td>
+        <td className="r" style={{ whiteSpace: 'nowrap' }}>
+          <button className="btn sm" onClick={() => setStockTarget(p)}>在庫</button>{' '}
+          <button className="btn sm ghost" onClick={() => setEditing(p)}>編集</button>
+        </td>
+      </tr>
+    )
   }
 
   return (
@@ -124,51 +183,47 @@ export function ProductsPage() {
                 </tr>
               </thead>
               <tbody>
-                {shown.map((p) => {
-                  const s = stock.get(p.id) ?? 0
-                  const avg = avgOf(p)
-                  const last = costing.byProduct.get(p.id)?.lastCost
-                  const margin = p.price - avg
+                {groups.map((g) => {
+                  if (g.items.length === 1) return productRow(g.items[0], false)
+                  const isOpen = autoOpen || open.has(g.name)
+                  const s = g.items.reduce((a, p) => a + (stock.get(p.id) ?? 0), 0)
+                  const prices = g.items.map((p) => p.price)
+                  const lo = Math.min(...prices)
+                  const hi = Math.max(...prices)
+                  const cats = [...new Set(g.items.map((p) => p.category))]
                   return (
-                    <tr key={p.id} className={p.active ? '' : 'inactive'}>
-                      <td>
-                        <div style={{ fontWeight: 600 }}>
-                          {p.name}
-                          {p.type && <span className="attr">{p.type}</span>}
-                          {p.size && <span className="attr size">{p.size}</span>}
-                        </div>
-                        <div className="muted small">{p.sku}{!p.active && '・販売停止中'}</div>
-                      </td>
-                      <td>{p.category}</td>
-                      <td className="r">
-                        <NumberInput
-                          value={p.price}
-                          min={0}
-                          onChange={(v) => updateProduct(p.id, { price: v })}
-                          style={{ width: 96 }}
-                          aria-label={`${fullName(p)} の販売価格`}
-                        />
-                        <FloorNote price={p.price} floor={floorPrice(p, avg, fees).price} />
-                      </td>
-                      <td className="r num">
-                        {costYen(avg)}
-                        {last != null && Math.round(last) !== Math.round(avg) && (
-                          <div className="muted small">直近仕入 {yen(last)}</div>
-                        )}
-                      </td>
-                      <td className="r num">
-                        {costYen(margin)}
-                        <div className="muted small">{p.price ? pct(margin / p.price) : '—'}</div>
-                      </td>
-                      <td className="r num">
-                        <div style={{ fontWeight: 700, fontSize: 16 }}>{s}</div>
-                        <StockBadge stock={s} low={p.lowStock} />
-                      </td>
-                      <td className="r" style={{ whiteSpace: 'nowrap' }}>
-                        <button className="btn sm" onClick={() => setStockTarget(p)}>在庫</button>{' '}
-                        <button className="btn sm ghost" onClick={() => setEditing(p)}>編集</button>
-                      </td>
-                    </tr>
+                    <Fragment key={`g:${g.name}`}>
+                      <tr className="group-row" onClick={() => toggleOpen(g.name)}>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>
+                            <button
+                              className={`tri-btn${isOpen ? ' open' : ''}`}
+                              aria-expanded={isOpen}
+                              aria-label={isOpen ? 'タイプ・サイズを閉じる' : 'タイプ・サイズを表示'}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                toggleOpen(g.name)
+                              }}
+                            >
+                              ▲
+                            </button>
+                            {g.name}
+                            <span className="muted small" style={{ fontWeight: 400, marginLeft: 6 }}>{g.items.length}種類</span>
+                          </div>
+                          <VariantSummary items={g.items} />
+                        </td>
+                        <td>{cats.join('・')}</td>
+                        <td className="r num">{lo === hi ? yen(lo) : `${yen(lo)}〜${yen(hi)}`}</td>
+                        <td></td>
+                        <td></td>
+                        <td className="r num">
+                          <div style={{ fontWeight: 700, fontSize: 16 }}>{s}</div>
+                          <div className="muted small">合計</div>
+                        </td>
+                        <td></td>
+                      </tr>
+                      {isOpen && g.items.map((p) => productRow(p, true))}
+                    </Fragment>
                   )
                 })}
               </tbody>

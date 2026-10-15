@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { compareSize } from '../format'
 
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   useEffect(() => {
@@ -84,4 +85,17 @@ export function StockBadge({ stock, low }: { stock: number; low: number }) {
   if (stock <= 0) return <span className="badge out">在庫切れ</span>
   if (stock <= low) return <span className="badge low">残り{stock}</span>
   return null
+}
+
+/** 同名商品のまとまりに含まれるタイプ・サイズの一覧 */
+export function VariantSummary({ items }: { items: { type: string; size: string }[] }) {
+  const types = [...new Set(items.map((p) => p.type).filter(Boolean))]
+  const sizes = [...new Set(items.map((p) => p.size).filter(Boolean))].sort(compareSize)
+  if (!types.length && !sizes.length) return null
+  return (
+    <span className="attrs">
+      {types.map((t) => <span key={`t:${t}`} className="attr">{t}</span>)}
+      {sizes.map((s) => <span key={`s:${s}`} className="attr size">{s}</span>)}
+    </span>
+  )
 }

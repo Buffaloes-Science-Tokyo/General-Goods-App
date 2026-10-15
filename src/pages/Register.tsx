@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { checkout, useStore, type CartLine } from '../store'
-import { fullName, yen } from '../format'
+import { fullName, groupByName, yen } from '../format'
 import { computeDiscounts, matchesTarget, MANUAL_NAME, type CalcLine, type ManualDiscount } from '../discounts'
-import type { DiscountRule, PaymentMethod, Sale } from '../types'
-import { Modal, NumberInput, StockBadge, toastError } from '../components/ui'
+import type { DiscountRule, PaymentMethod, Product, Sale } from '../types'
+import { Modal, NumberInput, StockBadge, toastError, VariantSummary } from '../components/ui'
 
 const QUICK_CASH = [1000, 5000, 10000]
 const NO_MANUAL: ManualDiscount = { kind: 'yen', value: 0 }
@@ -34,6 +34,9 @@ export function RegisterPage() {
       (cat === 'すべて' || (p.category || '未分類') === cat) &&
       (!query || `${p.name} ${p.type} ${p.size} ${p.sku}`.toLowerCase().includes(query.toLowerCase())),
   )
+  // 商品名が同じものは1枚にまとめ、開くとタイプ・サイズ別に選べる
+  const groups = groupByName(shown)
+  const [open, setOpen] = useState<Set<string>>(new Set())
 
   const byId = new Map(products.map((p) => [p.id, p]))
   const lines = cart.map((c) => ({ ...c, product: byId.get(c.productId) })).filter((l) => l.product)
@@ -105,6 +108,28 @@ export function RegisterPage() {
     clear()
   }
 
+  function productTile(p: Product) {
+    const left = leftOf(p.id)
+    const inCart = qtyInCart(p.id)
+    return (
+      <button key={p.id} className="tile" onClick={() => add(p.id)} disabled={left <= 0}>
+        {inCart > 0 && <span className="in-cart">{inCart}</span>}
+        <span className="name">{p.name}</span>
+        {(p.type || p.size) && (
+          <span className="attrs">
+            {p.type && <span className="attr">{p.type}</span>}
+            {p.size && <span className="attr size">{p.size}</span>}
+          </span>
+        )}
+        <span className="meta">
+          <span>{p.category}</span>
+          <StockBadge stock={left} low={p.lowStock} />
+        </span>
+        <span className="price num">{yen(p.price)}</span>
+      </button>
+    )
+  }
+
   const canPay = lines.length > 0 && (payment === 'cashless' || received >= total)
   const ruleLabel = (id: string | null) => (id ? discountRules.find((r) => r.id === id)?.name : null)
 
@@ -140,25 +165,36 @@ export function RegisterPage() {
           </div>
         ) : (
           <div className="tiles">
-            {shown.map((p) => {
-              const left = leftOf(p.id)
-              const inCart = qtyInCart(p.id)
+            {groups.map((g) => {
+              if (g.items.length === 1) return productTile(g.items[0])
+              const isOpen = open.has(g.name)
+              const left = g.items.reduce((s, p) => s + Math.max(0, leftOf(p.id)), 0)
+              const inCart = g.items.reduce((s, p) => s + qtyInCart(p.id), 0)
+              const prices = g.items.map((p) => p.price)
+              const lo = Math.min(...prices)
+              const hi = Math.max(...prices)
               return (
-                <button key={p.id} className="tile" onClick={() => add(p.id)} disabled={left <= 0}>
-                  {inCart > 0 && <span className="in-cart">{inCart}</span>}
-                  <span className="name">{p.name}</span>
-                  {(p.type || p.size) && (
-                    <span className="attrs">
-                      {p.type && <span className="attr">{p.type}</span>}
-                      {p.size && <span className="attr size">{p.size}</span>}
+                <Fragment key={`g:${g.name}`}>
+                  <button
+                    className={`tile group${isOpen ? ' open' : ''}`}
+                    onClick={() => setOpen(toggle(open, g.name, !isOpen))}
+                    aria-expanded={isOpen}
+                  >
+                    {inCart > 0 && <span className="in-cart">{inCart}</span>}
+                    <span className="name">{g.name}</span>
+                    <VariantSummary items={g.items} />
+                    <span className="variants-toggle">
+                      <span className="tri" aria-hidden>▲</span>
+                      {g.items.length}種類
                     </span>
-                  )}
-                  <span className="meta">
-                    <span>{p.category}</span>
-                    <StockBadge stock={left} low={p.lowStock} />
-                  </span>
-                  <span className="price num">{yen(p.price)}</span>
-                </button>
+                    <span className="meta">
+                      <span>{g.items[0].category}</span>
+                      <StockBadge stock={left} low={Math.min(...g.items.map((p) => p.lowStock))} />
+                    </span>
+                    <span className="price num">{lo === hi ? yen(lo) : `${yen(lo)}〜`}</span>
+                  </button>
+                  {isOpen && <div className="variant-panel">{g.items.map(productTile)}</div>}
+                </Fragment>
               )
             })}
           </div>
