@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from 'react'
-import { checkout, useStore, type CartLine } from '../store'
+import { BASE_HUB_NAME, checkout, selectHub, useStore, type CartLine } from '../store'
 import { fullName, groupByName, yen } from '../format'
 import { computeDiscounts, matchesTarget, MANUAL_NAME, type CalcLine, type ManualDiscount } from '../discounts'
 import type { DiscountRule, PaymentMethod, Product, Sale } from '../types'
@@ -9,12 +9,11 @@ const QUICK_CASH = [1000, 5000, 10000]
 const NO_MANUAL: ManualDiscount = { kind: 'yen', value: 0 }
 
 export function RegisterPage() {
-  const { products, stock, discountRules, remote } = useStore()
-  // 遠方モード中は持ち出した商品だけを表示し、持ち出し分の残りも上限にする
-  const remoteOn = remote?.settings.active ? remote : null
+  const { products, stock, discountRules, hubs, hub } = useStore()
+  // ハブを選んでいるときは持ち出した商品だけを表示し、持ち出し分の残りも上限にする
   const leftOf = (id: string) => {
     const left = stock.get(id) ?? 0
-    return remoteOn ? Math.min(left, remoteOn.left.get(id) ?? 0) : left
+    return hub ? Math.min(left, hub.left.get(id) ?? 0) : left
   }
   const [cat, setCat] = useState<string>('すべて')
   const [query, setQuery] = useState('')
@@ -27,7 +26,7 @@ export function RegisterPage() {
   const [received, setReceived] = useState(0)
   const [done, setDone] = useState<Sale | null>(null)
 
-  const sellable = products.filter((p) => p.active && (!remoteOn || (remoteOn.settings.allocations[p.id] ?? 0) > 0))
+  const sellable = products.filter((p) => p.active && (!hub || (hub.hub.allocations[p.id] ?? 0) > 0))
   const categories = useMemo(() => ['すべて', ...new Set(sellable.map((p) => p.category || '未分類'))], [sellable])
   const shown = sellable.filter(
     (p) =>
@@ -136,10 +135,28 @@ export function RegisterPage() {
   return (
     <div className="register">
       <section className="catalog">
-        {remoteOn && (
-          <div className="remote-banner">
-            遠方モード{remoteOn.settings.name && `：${remoteOn.settings.name}`}
-            <span className="small">（持ち出した商品だけを表示・在庫は持ち出し分の残り）</span>
+        {hubs.length > 0 && (
+          <div className={`hub-bar${hub ? ' remote-banner' : ''}`}>
+            <label className="row" style={{ gap: 6 }}>
+              ハブ
+              <select
+                className="select"
+                value={hub?.hub.id ?? ''}
+                onChange={(e) => {
+                  if (cart.length && !confirm('ハブを切り替えると、カートを空にします。よろしいですか？')) return
+                  clear()
+                  selectHub(e.target.value || null)
+                }}
+              >
+                <option value="">{BASE_HUB_NAME}</option>
+                {hubs.map((h) => (
+                  <option key={h.hub.id} value={h.hub.id}>{h.hub.name}</option>
+                ))}
+              </select>
+            </label>
+            <span className="small">
+              {hub ? '持ち出した商品だけを表示・在庫は持ち出し分の残り' : 'すべての在庫で販売'}
+            </span>
           </div>
         )}
         <div className="row" style={{ marginBottom: 12 }}>
@@ -159,8 +176,8 @@ export function RegisterPage() {
         </div>
         {sellable.length === 0 ? (
           <div className="card empty">
-            {remoteOn
-              ? '持ち出した商品がありません。「設定」の遠方物販で持ち出し数を入力してください。'
+            {hub
+              ? `「${hub.hub.name}」に持ち出した商品がありません。「棚卸し」タブで持っていく数を入力してください。`
               : '商品がまだありません。「商品・在庫」タブから登録してください。'}
           </div>
         ) : (

@@ -6,7 +6,7 @@ import type {
   OnlineOrderInfo,
   PaymentMethod,
   Product,
-  RemoteSettings,
+  StockHub,
   Sale,
   SaleItem,
   ShopSettings,
@@ -34,8 +34,8 @@ export type LocalState = {
   stockEvents: Record<string, StockEvent>
   discountRules: Record<string, DiscountRule>
   settings: ShopSettings
-  /** この端末の情報（同期しない） */
-  device: { id: string; code: string; nextReceipt: number }
+  /** この端末の情報（同期しない）。hubId = この端末のレジで選んでいるハブ（無ければベース） */
+  device: { id: string; code: string; nextReceipt: number; hubId?: string }
   outbox: Outbox
   /** 同期設定（同期しない） */
   sync: { cursor: number; token: string; lastSyncAt: string | null }
@@ -131,7 +131,10 @@ export async function initStore() {
 export type View = {
   products: Product[]
   sales: Sale[]
+  /** すべての在庫記録（取り消されたものも含む。時刻順） */
   stockEvents: StockEvent[]
+  /** 取り消し・修正された記録のID → それを取り消した（置き換えた）記録 */
+  cancelledBy: Map<string, StockEvent>
   /** 削除されていない割引ルール（作成順） */
   discountRules: DiscountRule[]
   stock: Map<string, number>
@@ -142,8 +145,10 @@ export type View = {
   fees: FeeSettings
   device: LocalState['device']
   sync: LocalState['sync']
-  /** 遠方物販の設定と、商品ごとの売れた数・残り（持ち出し数 − この物販で売れた数）。未設定なら null */
-  remote: { settings: RemoteSettings; left: Map<string, number>; sold: Map<string, number> } | null
+  /** 棚卸しハブ（ベース以外）と、商品ごとの売れた数・残り（持ち出し数 − このハブで売れた数） */
+  hubs: HubView[]
+  /** この端末のレジで選んでいるハブ。ベースなら null */
+  hub: HubView | null
   pending: number
   persistError: string | null
 }
@@ -154,7 +159,8 @@ function buildView(s: LocalState): View {
   const stock = new Map<string, number>()
   // 時刻 → ID の順で並べる（全端末で同じ順序にして、原価計算の結果をそろえる）
   const stockEvents = Object.values(s.stockEvents).sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))
-  for (const e of stockEvents) stock.set(e.productId, (stock.get(e.productId) ?? 0) + e.delta)
+  const { effective, cancelledBy } = resolveCorrections(stockEvents)
+  for (const e of effective) stock.set(e.productId, (stock.get(e.productId) ?? 0) + e.delta)
   return {
     products: Object.values(s.products)
       .filter((p) => !p.deleted)
@@ -170,16 +176,17 @@ function buildView(s: LocalState): View {
       ),
     sales: Object.values(s.sales).sort((a, b) => a.at.localeCompare(b.at)),
     stockEvents,
+    cancelledBy,
     discountRules: Object.values(s.discountRules)
       .filter((r) => !r.deleted)
       .sort((a, b) => a.name.localeCompare(b.name, 'ja')),
     stock,
-    costing: computeCosting(stockEvents, s.products),
+    costing: computeCosting(effective, s.products),
     settings: s.settings,
     fees: { ...DEFAULT_FEES, ...s.settings.fees },
     device: s.device,
     sync: s.sync,
-    remote: buildRemote(s),
+    ...buildHubs(s),
     pending:
       s.outbox.products.length +
       s.outbox.sales.length +
@@ -190,16 +197,32 @@ function buildView(s: LocalState): View {
   }
 }
 
-function buildRemote(s: LocalState): View['remote'] {
-  const r = s.settings.remote
-  if (!r) return null
-  const sold = remoteSold(s, r.eventId)
-  const left = new Map(Object.entries(r.allocations).map(([id, n]) => [id, n - (sold.get(id) ?? 0)]))
-  return { settings: r, left, sold }
+export type HubView = { hub: StockHub; left: Map<string, number>; sold: Map<string, number> }
+
+/** ベースの名前（ハブを選んでいないとき＝すべての在庫） */
+export const BASE_HUB_NAME = 'ベース'
+
+/** ハブの一覧。以前の遠方物販の設定しか無いデータは、それを1つのハブとして扱う */
+function hubsOf(settings: ShopSettings): StockHub[] {
+  if (settings.hubs) return settings.hubs
+  const r = settings.remote
+  if (!r || (!r.eventId && !Object.keys(r.allocations).length)) return []
+  const eventId = r.eventId || 'remote'
+  return [{ id: eventId, name: r.name || '遠方物販', allocations: r.allocations, eventId }]
 }
 
-/** その遠方物販で売れた数（取り消した会計は除く） */
-function remoteSold(s: LocalState, eventId: string) {
+function buildHubs(s: LocalState): Pick<View, 'hubs' | 'hub'> {
+  const hubs = hubsOf(s.settings).map((hub) => {
+    const sold = hubSold(s, hub.eventId)
+    const left = new Map(Object.entries(hub.allocations).map(([id, n]) => [id, n - (sold.get(id) ?? 0)]))
+    return { hub, left, sold }
+  })
+  // 選んでいたハブが他の端末で削除されていたらベースに戻る
+  return { hubs, hub: hubs.find((h) => h.hub.id === s.device.hubId) ?? null }
+}
+
+/** そのハブで売れた数（取り消した会計は除く） */
+function hubSold(s: LocalState, eventId: string) {
   const sold = new Map<string, number>()
   for (const sale of Object.values(s.sales)) {
     if (sale.voided || sale.remoteEvent !== eventId) continue
@@ -246,6 +269,22 @@ function makeEvent(
   return { id: uid(), productId, at, delta, unitCost, reason, note, saleId, deviceId: state.device.id }
 }
 
+/**
+ * 取り消し・修正を反映して、在庫数と原価の計算に使う記録だけを残す。
+ * - 他の記録に cancels で指された記録は無効（取り消し・修正の前の値）
+ * - 同じ記録を複数の端末で同時に訂正したときは、ID順で最初の訂正だけを有効にする（全端末で同じ結果になる）
+ */
+function resolveCorrections(events: StockEvent[]) {
+  const cancelledBy = new Map<string, StockEvent>()
+  for (const e of events) {
+    if (!e.cancels) continue
+    const w = cancelledBy.get(e.cancels)
+    if (!w || e.id < w.id) cancelledBy.set(e.cancels, e)
+  }
+  const effective = events.filter((e) => !cancelledBy.has(e.id) && (!e.cancels || cancelledBy.get(e.cancels) === e))
+  return { effective, cancelledBy }
+}
+
 function withEvents(s: LocalState, events: StockEvent[]): LocalState {
   const stockEvents = { ...s.stockEvents }
   const ids = [...s.outbox.stockEvents]
@@ -274,11 +313,11 @@ function withSale(s: LocalState, sale: Sale): LocalState {
 
 export const stockOf = (id: string) => getView().stock.get(id) ?? 0
 
-/** レジで売れる数。遠方モード中は持ち出し分の残りも上限になる（持ち出していない商品は 0） */
+/** レジで売れる数。ハブを選んでいるときは持ち出し分の残りも上限になる（持ち出していない商品は 0） */
 export function sellableOf(id: string) {
-  const { stock, remote } = getView()
+  const { stock, hub } = getView()
   const left = stock.get(id) ?? 0
-  return remote?.settings.active ? Math.min(left, remote.left.get(id) ?? 0) : left
+  return hub ? Math.min(left, hub.left.get(id) ?? 0) : left
 }
 export const avgCostOf = (id: string) => getView().costing.byProduct.get(id)?.avg ?? state.products[id]?.cost ?? 0
 
@@ -328,6 +367,44 @@ export function setStock(id: string, actual: number, note = '棚卸し') {
   adjustStock(id, actual - stockOf(id), note)
 }
 
+/** あとから取り消し・修正できる記録（販売や取消戻しは販売履歴の側で取り消す） */
+export const CORRECTABLE: ReadonlySet<StockReason> = new Set(['initial', 'restock', 'adjust', 'revalue'])
+
+/** 取り消し・修正できるか（対象の種類で、まだ取り消されていない記録） */
+export function isCorrectable(e: StockEvent) {
+  return CORRECTABLE.has(e.reason) && !getView().cancelledBy.has(e.id)
+}
+
+/** 誤って記録した入荷・棚卸し・原価修正を取り消す（無かったことにして在庫数・平均原価を計算し直す） */
+export function cancelStockEvent(id: string, note = '') {
+  const e = state.stockEvents[id]
+  if (!e || !isCorrectable(e)) return
+  commit(withEvents(state, [{ ...makeEvent(e.productId, 0, 'cancel', note), cancels: id }]))
+}
+
+/** 記録の数量・単価を直す。元の記録を取り消し、同じ時刻に正しい値の記録を入れる */
+export function correctStockEvent(id: string, fix: { delta: number; unitCost: number | null; note: string }) {
+  const e = state.stockEvents[id]
+  if (!e || !isCorrectable(e)) return
+  const unitCost = fix.unitCost == null ? null : Math.max(0, fix.unitCost)
+  commit(withEvents(state, [{ ...makeEvent(e.productId, fix.delta, e.reason, fix.note, null, e.at, unitCost), cancels: id }]))
+}
+
+/** その記録の直後の在庫数（取り消された記録は除いて数える） */
+export function stockAfter(id: string) {
+  const { stockEvents, cancelledBy } = getView()
+  const target = state.stockEvents[id]
+  if (!target) return 0
+  let n = 0
+  for (const e of stockEvents) {
+    if (e.productId !== target.productId) continue
+    if (e.id === id) return n + e.delta
+    if (cancelledBy.has(e.id) || (e.cancels && cancelledBy.get(e.cancels) !== e)) continue
+    n += e.delta
+  }
+  return n
+}
+
 // ---------- レジ ----------
 
 export type CartLine = { productId: string; qty: number }
@@ -368,11 +445,11 @@ export function checkout(
 
   const at = now()
   const { device } = state
-  const remote = state.settings.remote
+  const hub = getView().hub
   const sale: Sale = {
     id: uid(),
     receiptNo: `${device.code}-${String(device.nextReceipt).padStart(4, '0')}`,
-    ...(remote?.active ? { remoteEvent: remote.eventId } : {}),
+    ...(hub ? { remoteEvent: hub.hub.eventId } : {}),
     at,
     deviceId: device.id,
     items,
@@ -531,13 +608,43 @@ export function updateFees(fees: FeeSettings) {
   })
 }
 
-/** 遠方物販の設定（全端末で共有） */
-export function updateRemote(remote: RemoteSettings) {
+// ---------- 棚卸しハブ ----------
+
+/** ハブの一覧を保存する（全端末で共有） */
+function saveHubs(hubs: StockHub[]) {
   commit({
     ...state,
-    settings: { ...state.settings, remote, updatedAt: now() },
+    settings: { ...state.settings, hubs, updatedAt: now() },
     outbox: { ...state.outbox, settings: true },
   })
+}
+
+/** ハブを追加して、その ID を返す */
+export function addHub(name: string) {
+  const hub: StockHub = { id: uid(), name: name.trim(), allocations: {}, eventId: uid() }
+  saveHubs([...hubsOf(state.settings), hub])
+  return hub.id
+}
+
+/** ハブの名前・持ち出し数を変える */
+export function updateHub(id: string, patch: Partial<Pick<StockHub, 'name' | 'allocations'>>) {
+  saveHubs(hubsOf(state.settings).map((h) => (h.id === id ? { ...h, ...patch } : h)))
+}
+
+/** 売れた数を 0 から数え直す（同じハブを次の物販で使うときなど） */
+export function resetHubSold(id: string) {
+  saveHubs(hubsOf(state.settings).map((h) => (h.id === id ? { ...h, eventId: uid() } : h)))
+}
+
+/** ハブを削除する（過去の売上はそのまま。選んでいた端末はベースに戻る） */
+export function deleteHub(id: string) {
+  saveHubs(hubsOf(state.settings).filter((h) => h.id !== id))
+}
+
+/** この端末のレジで使うハブを選ぶ（null = ベース）。端末ごとの設定で、同期しない */
+export function selectHub(id: string | null) {
+  const { hubId: _, ...device } = state.device
+  commit({ ...state, device: id ? { ...device, hubId: id } : device })
 }
 
 export function setDeviceCode(code: string) {

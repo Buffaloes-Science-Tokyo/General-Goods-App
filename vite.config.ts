@@ -12,7 +12,12 @@ function devSyncApi(env: Record<string, string>): Plugin {
     configureServer(server: ViteDevServer) {
       const useLocal = !env.DATABASE_URL
       const syncEnv = useLocal
-        ? { DATABASE_URL: 'pglite', SYNC_TOKEN: env.SYNC_TOKEN || 'dev-secret', APP_PASSWORD: env.APP_PASSWORD || 'dev' }
+        ? {
+            DATABASE_URL: 'pglite',
+            SYNC_TOKEN: env.SYNC_TOKEN || 'dev-secret',
+            APP_PASSWORD: env.APP_PASSWORD || 'dev',
+            ACCOUNTING_PASSWORD: env.ACCOUNTING_PASSWORD || 'dev-accounting',
+          }
         : env
       let localSql: Promise<NeonQueryFunction<false, false>> | null = null
       const getLocalSql = () =>
@@ -22,7 +27,7 @@ function devSyncApi(env: Record<string, string>): Plugin {
           return pgliteSql(new PGlite('./.pglite'))
         })())
       if (useLocal) {
-        server.config.logger.info(`  ➜  同期API: 組み込みDB (.pglite/) を使用中。パスワードは "${syncEnv.APP_PASSWORD}"`)
+        server.config.logger.info(`  ➜  同期API: 組み込みDB (.pglite/) を使用中。パスワードは レジ "${syncEnv.APP_PASSWORD}" / 会計 "${syncEnv.ACCOUNTING_PASSWORD}"`)
       }
 
       const toRequest = async (req: import('node:http').IncomingMessage & { originalUrl?: string }) => {

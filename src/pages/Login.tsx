@@ -1,11 +1,14 @@
 import { useState } from 'react'
 import { useStore } from '../store'
 import { login, takeLogoutReason } from '../sync'
+import { APPS, type AppId } from './Home'
 
-export function LoginPage() {
+export function LoginPage({ app, onBack }: { app: AppId; onBack: () => void }) {
   const { settings, pending } = useStore()
+  const appName = APPS.find((a) => a.id === app)!.name
   const [password, setPassword] = useState('')
-  const [error, setError] = useState(takeLogoutReason)
+  // パスワード変更でのログアウト理由はレジ（同期）のもの
+  const [error, setError] = useState(() => (app === 'register' ? takeLogoutReason() : ''))
   const [busy, setBusy] = useState(false)
 
   return (
@@ -17,12 +20,13 @@ export function LoginPage() {
           if (!password || busy) return
           setBusy(true)
           setError('')
-          const err = await login(password)
+          const err = await login(password, app)
           setBusy(false)
           if (err) setError(err)
         }}
       >
-        <h1>{settings.shopName}</h1>
+        <h1>{appName}</h1>
+        <p className="muted small" style={{ margin: 0 }}>{settings.shopName}</p>
         <label className="field">
           パスワード
           <input
@@ -38,7 +42,10 @@ export function LoginPage() {
         <button className="btn primary" type="submit" disabled={!password || busy}>
           {busy ? 'ログイン中…' : 'ログイン'}
         </button>
-        {pending > 0 && (
+        <button className="btn ghost" type="button" onClick={onBack}>
+          ← ホームに戻る
+        </button>
+        {app === 'register' && pending > 0 && (
           <p className="muted small" style={{ margin: 0 }}>
             この端末に未送信の変更が {pending}件あります。ログインすると送信します。
           </p>

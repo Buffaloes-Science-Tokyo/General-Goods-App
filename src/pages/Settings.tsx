@@ -12,7 +12,6 @@ import { logout, syncNow, useSyncStatus } from '../sync'
 import { dateTime, downloadText } from '../format'
 import { toast, toastError } from '../components/ui'
 import { FeeSettingsCard } from '../components/FeeSettingsCard'
-import { RemoteStockCard } from '../components/RemoteStockCard'
 
 export function SettingsPage() {
   const { settings, device, sync, pending, products, sales } = useStore()
@@ -62,8 +61,6 @@ export function SettingsPage() {
           </button>
         </div>
       </div>
-
-      <RemoteStockCard />
 
       <FeeSettingsCard />
 

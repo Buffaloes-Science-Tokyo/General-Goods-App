@@ -65,6 +65,8 @@ const SCHEMA = [
   )`,
   // 仕入単価（入荷・原価修正のとき）。既存のDBにも追加されるよう alter で
   `alter table stock_events add column if not exists unit_cost double precision`,
+  // 取り消し・修正の対象の記録ID
+  `alter table stock_events add column if not exists cancels text`,
   `create index if not exists stock_events_seq_idx on stock_events (seq)`,
   `create index if not exists stock_events_product_idx on stock_events (product_id)`,
   `alter table sales add column if not exists discounts jsonb not null default '[]'`,
@@ -88,6 +90,7 @@ const SCHEMA = [
   `alter table shop_settings add column if not exists fees jsonb`,
   `alter table sales add column if not exists remote_event text`,
   `alter table shop_settings add column if not exists remote jsonb`,
+  `alter table shop_settings add column if not exists hubs jsonb`,
 ]
 
 const UPSERT_PRODUCTS = `
@@ -127,11 +130,11 @@ on conflict (id) do update set
 where excluded.updated_at > sales.updated_at or (excluded.voided and not sales.voided)`
 
 const INSERT_EVENTS = `
-insert into stock_events (id, product_id, at, delta, unit_cost, reason, note, sale_id, device_id)
-select id, "productId", at, delta, "unitCost", reason, note, "saleId", "deviceId"
+insert into stock_events (id, product_id, at, delta, unit_cost, reason, note, sale_id, device_id, cancels)
+select id, "productId", at, delta, "unitCost", reason, note, "saleId", "deviceId", cancels
 from jsonb_to_recordset($1::jsonb) as x(
   id text, "productId" text, at timestamptz, delta integer, "unitCost" double precision, reason text, note text,
-  "saleId" text, "deviceId" text)
+  "saleId" text, "deviceId" text, cancels text)
 on conflict (id) do nothing`
 
 // 割引ルールは中身を丸ごと jsonb で保存（項目が増えてもスキーマ変更不要）。最後に更新したものが勝つ
@@ -144,12 +147,12 @@ on conflict (id) do update set
 where discount_rules.updated_at < excluded.updated_at`
 
 const UPSERT_SETTINGS = `
-insert into shop_settings (id, shop_name, fees, remote, updated_at)
-select 'shop', "shopName", fees, remote, "updatedAt"
-from jsonb_to_recordset($1::jsonb) as x("shopName" text, fees jsonb, remote jsonb, "updatedAt" timestamptz)
+insert into shop_settings (id, shop_name, fees, remote, hubs, updated_at)
+select 'shop', "shopName", fees, remote, hubs, "updatedAt"
+from jsonb_to_recordset($1::jsonb) as x("shopName" text, fees jsonb, remote jsonb, hubs jsonb, "updatedAt" timestamptz)
 on conflict (id) do update set
   shop_name = excluded.shop_name, fees = coalesce(excluded.fees, shop_settings.fees),
-  remote = coalesce(excluded.remote, shop_settings.remote), updated_at = excluded.updated_at, seq = nextval('sync_seq')
+  remote = coalesce(excluded.remote, shop_settings.remote), hubs = coalesce(excluded.hubs, shop_settings.hubs), updated_at = excluded.updated_at, seq = nextval('sync_seq')
 where shop_settings.updated_at < excluded.updated_at`
 
 const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : new Date(String(v)).toISOString())
@@ -229,11 +232,11 @@ export async function handleSync(
           [cursor],
         ),
         sql.query(
-          `select id, product_id, at, delta, unit_cost, reason, note, sale_id, device_id, seq::float8 as seq
+          `select id, product_id, at, delta, unit_cost, reason, note, sale_id, device_id, cancels, seq::float8 as seq
            from stock_events where seq > $1`,
           [cursor],
         ),
-        sql.query(`select shop_name, fees, remote, updated_at, seq::float8 as seq from shop_settings where seq > $1`, [cursor]),
+        sql.query(`select shop_name, fees, remote, hubs, updated_at, seq::float8 as seq from shop_settings where seq > $1`, [cursor]),
         sql.query(`select data, seq::float8 as seq from discount_rules where seq > $1`, [cursor]),
       ],
       { readOnly: true, isolationLevel: 'RepeatableRead' },
@@ -261,7 +264,7 @@ export async function handleSync(
       })),
       stockEvents: events.map((r) => ({
         id: r.id, productId: r.product_id, at: iso(r.at), delta: r.delta, unitCost: r.unit_cost, reason: r.reason, note: r.note,
-        saleId: r.sale_id, deviceId: r.device_id,
+        saleId: r.sale_id, deviceId: r.device_id, ...(r.cancels ? { cancels: r.cancels } : {}),
       })),
       discountRules: discountRules.map((r) => r.data),
       settings: settings[0]
@@ -269,6 +272,7 @@ export async function handleSync(
             shopName: settings[0].shop_name,
             ...(settings[0].fees ? { fees: settings[0].fees } : {}),
             ...(settings[0].remote ? { remote: settings[0].remote } : {}),
+            ...(settings[0].hubs ? { hubs: settings[0].hubs } : {}),
             updatedAt: iso(settings[0].updated_at),
           }
         : null,

@@ -81,7 +81,7 @@ export type Sale = {
   receiptNo: string
   /** 店頭 or オンライン（以前のデータは店頭） */
   channel?: SalesChannel
-  /** 遠方物販のレジで会計したとき、その物販の ID（RemoteSettings.eventId） */
+  /** ハブ（ベース以外）のレジで会計したとき、そのハブの集計ID（StockHub.eventId） */
   remoteEvent?: string
   online?: OnlineOrderInfo
   at: string
@@ -103,8 +103,11 @@ export type Sale = {
   updatedAt: string
 }
 
-/** revalue = 原価の修正（数量は変えず、平均原価を指定値にする） */
-export type StockReason = 'initial' | 'sale' | 'restock' | 'adjust' | 'void' | 'revalue'
+/**
+ * revalue = 原価の修正（数量は変えず、平均原価を指定値にする）
+ * cancel = 誤って記録した入荷・棚卸しなどの取り消し（cancels の記録を無かったことにする。数量は 0）
+ */
+export type StockReason = 'initial' | 'sale' | 'restock' | 'adjust' | 'void' | 'revalue' | 'cancel'
 
 /** 在庫の増減記録。在庫数はこの合計で決まる（端末間で競合しない） */
 export type StockEvent = {
@@ -118,6 +121,12 @@ export type StockEvent = {
   note: string
   saleId: string | null
   deviceId: string
+  /**
+   * 取り消す（置き換える）記録のID。記録は消さずに追記だけで同期するため、訂正はこの形で表す。
+   * - reason が cancel：その記録の取り消し
+   * - それ以外：その記録の修正版（at は元の記録と同じ時刻にして、原価計算の順序を保つ）
+   */
+  cancels?: string | null
 }
 
 /** 割引の対象（すべて／商品／カテゴリ／タイプ／サイズ） */
@@ -170,7 +179,22 @@ export type FeeSettings = {
 }
 
 /**
- * 遠方物販の設定（全端末で共有）。
+ * 棚卸しハブ（全端末で共有）。物販の会場など、在庫を持ち出す先。
+ * ベース（すべての在庫）はハブの一覧には含めず、変更できない。
+ * レジでハブを選ぶと、そのハブに持ち出した商品だけを表示し、「持ち出し数 − このハブで売れた数」を超えては売れない。
+ * 売れた分は通常どおり本体の在庫からも減る
+ */
+export type StockHub = {
+  id: string
+  name: string
+  /** 商品ID → 持ち出し数 */
+  allocations: Record<string, number>
+  /** 売れた数を数える区切りのID。「売れた数をリセット」で新しくなり、その後の会計だけを数える */
+  eventId: string
+}
+
+/**
+ * 以前の遠方物販の設定（全端末で共有）。hubs が無いデータでは、これを1つのハブとして読み込む。
  * 商品ごとに持ち出し数を決め、遠方モード中のレジではその商品だけを表示する。
  * 残り＝持ち出し数 − この物販で売れた数（取消は戻る）。売れた分は通常どおり本体の在庫からも減る
  */
@@ -189,8 +213,10 @@ export type ShopSettings = {
   shopName: string
   /** 以前のデータには無い */
   fees?: FeeSettings
-  /** 以前のデータには無い */
+  /** 以前のデータ。hubs に移したあとは使わない */
   remote?: RemoteSettings
+  /** 棚卸しハブ（ベース以外）。以前のデータには無い */
+  hubs?: StockHub[]
   updatedAt: string
 }
 

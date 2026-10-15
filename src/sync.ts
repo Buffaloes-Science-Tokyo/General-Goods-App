@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { applySyncResult, clearSyncToken, collectOutbox, getState, pendingCount, setSyncToken, subscribeStore } from './store'
+import { setAccountingToken } from './accountingAuth'
 import type { SyncRequest, SyncResponse } from './types'
 
 export type SyncStatus =
@@ -40,19 +41,23 @@ export const takeLogoutReason = () => {
   return r
 }
 
-/** パスワードでログインし、成功したらトークンを保存して同期を始める。失敗時はメッセージを返す */
-export async function login(password: string): Promise<string | null> {
+/**
+ * パスワードでログインし、成功したらトークンを保存する（レジなら同期も始まる）。失敗時はメッセージを返す。
+ * レジと会計アプリはパスワードもトークンも別。
+ */
+export async function login(password: string, app: 'register' | 'accounting' = 'register'): Promise<string | null> {
   if (!navigator.onLine) return 'オフラインです。初回のログインにはインターネット接続が必要です'
   try {
     const res = await fetch(LOGIN_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, app }),
     })
     const data = (await res.json().catch(() => ({}))) as { token?: string; error?: string }
     if (res.status === 401) return 'パスワードが違います'
     if (!res.ok || !data.token) return `サーバーエラー (${res.status}) ${data.error ?? ''}`.trim()
-    setSyncToken(data.token)
+    if (app === 'accounting') setAccountingToken(data.token)
+    else setSyncToken(data.token)
     return null
   } catch {
     return 'サーバーに接続できません'

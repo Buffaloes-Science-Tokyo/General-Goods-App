@@ -1,19 +1,11 @@
 import { Fragment, useMemo, useState } from 'react'
-import { addProduct, deleteProduct, restock, revalueCost, setStock, updateProduct, useStore, type ProductInput } from '../store'
+import { addProduct, deleteProduct, restock, revalueCost, updateProduct, useStore, type ProductInput } from '../store'
 import { previewAvg, type CostInfo } from '../costing'
 import { CHANNEL_LABEL, floorPrice } from '../pricing'
-import { compareSize, dateTime, groupByName, downloadText, fullName, pct, toCsv, yen } from '../format'
-import type { Product, StockReason } from '../types'
+import { compareSize, groupByName, downloadText, fullName, pct, toCsv, yen } from '../format'
+import type { Product } from '../types'
 import { Modal, NumberInput, StockBadge, toast, VariantSummary } from '../components/ui'
-
-const REASON: Record<StockReason, string> = {
-  initial: '初期在庫',
-  sale: '販売',
-  restock: '入荷',
-  adjust: '調整',
-  void: '取消戻し',
-  revalue: '原価修正',
-}
+import { StockHistory } from '../components/StockHistory'
 
 /** 平均原価は小数になりうるので、表示は円未満を四捨五入 */
 const costYen = (n: number) => yen(Math.round(n))
@@ -449,7 +441,7 @@ function ProductForm({
   )
 }
 
-type StockMode = 'restock' | 'count' | 'revalue'
+type StockMode = 'restock' | 'revalue'
 
 function StockModal({ product, onClose }: { product: Product; onClose: () => void }) {
   const { stock, stockEvents, costing } = useStore()
@@ -458,7 +450,6 @@ function StockModal({ product, onClose }: { product: Product; onClose: () => voi
   const [mode, setMode] = useState<StockMode>('restock')
   const [qty, setQty] = useState(0)
   const [unitCost, setUnitCost] = useState(Math.round(info.lastCost ?? info.avg))
-  const [actual, setActual] = useState(current)
   const [newCost, setNewCost] = useState(Math.round(info.avg))
   const [note, setNote] = useState('')
   const history = stockEvents.filter((e) => e.productId === product.id).slice(-30).reverse()
@@ -466,7 +457,6 @@ function StockModal({ product, onClose }: { product: Product; onClose: () => voi
 
   function switchMode(m: StockMode) {
     setMode(m)
-    setActual(current)
     setNewCost(Math.round(info.avg))
   }
 
@@ -476,10 +466,6 @@ function StockModal({ product, onClose }: { product: Product; onClose: () => voi
       restock(product.id, qty, unitCost, note)
       toast(`${qty}個 入荷しました（平均原価 ${costYen(nextAvg)}）`)
       setQty(0)
-    } else if (mode === 'count') {
-      if (actual === current) return
-      setStock(product.id, actual, note || '棚卸し')
-      toast(`在庫を ${actual} に修正しました`)
     } else {
       revalueCost(product.id, newCost, note)
       toast(`平均原価を ${yen(newCost)} に修正しました`)
@@ -488,7 +474,7 @@ function StockModal({ product, onClose }: { product: Product; onClose: () => voi
   }
 
   const disabled =
-    mode === 'restock' ? qty <= 0 : mode === 'count' ? actual === current : Math.round(info.avg) === newCost
+    mode === 'restock' ? qty <= 0 : Math.round(info.avg) === newCost
 
   return (
     <Modal title={`在庫：${fullName(product)}`} onClose={onClose}>
@@ -503,7 +489,6 @@ function StockModal({ product, onClose }: { product: Product; onClose: () => voi
       </div>
       <div className="seg" role="group" style={{ margin: '8px 0 12px' }}>
         <button aria-pressed={mode === 'restock'} onClick={() => switchMode('restock')}>入荷</button>
-        <button aria-pressed={mode === 'count'} onClick={() => switchMode('count')}>棚卸し</button>
         <button aria-pressed={mode === 'revalue'} onClick={() => switchMode('revalue')}>原価修正</button>
       </div>
       <div className="form-grid">
@@ -530,12 +515,6 @@ function StockModal({ product, onClose }: { product: Product; onClose: () => voi
             </div>
           </>
         )}
-        {mode === 'count' && (
-          <label className="field">
-            実際の在庫数
-            <NumberInput value={actual} min={0} onChange={setActual} autoFocus />
-          </label>
-        )}
         {mode === 'revalue' && (
           <>
             <label className="field">
@@ -553,41 +532,16 @@ function StockModal({ product, onClose }: { product: Product; onClose: () => voi
         </label>
         <div className="full">
           <button className="btn primary" onClick={apply} disabled={disabled}>
-            {mode === 'restock'
-              ? `＋${qty} 入荷する`
-              : mode === 'count'
-                ? `在庫を ${actual} にする（${actual - current >= 0 ? '+' : ''}${actual - current}）`
-                : `平均原価を ${yen(newCost)} にする`}
+            {mode === 'restock' ? `＋${qty} 入荷する` : `平均原価を ${yen(newCost)} にする`}
           </button>
         </div>
       </div>
 
       <h4 style={{ margin: '20px 0 8px', fontSize: 14 }}>在庫の履歴（直近30件）</h4>
-      <table className="tbl">
-        <thead>
-          <tr>
-            <th>日時</th>
-            <th>内容</th>
-            <th>メモ</th>
-            <th className="r">単価</th>
-            <th className="r">数量</th>
-          </tr>
-        </thead>
-        <tbody>
-          {history.map((e) => (
-            <tr key={e.id}>
-              <td className="muted small">{dateTime(e.at)}</td>
-              <td>{REASON[e.reason]}</td>
-              <td className="muted small">{e.note}</td>
-              <td className="r num muted">{e.unitCost != null ? yen(e.unitCost) : ''}</td>
-              <td className="r num" style={{ fontWeight: 600 }}>
-                {e.reason === 'revalue' ? '—' : e.delta > 0 ? `+${e.delta}` : e.delta}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {history.length === 0 && <div className="muted small">履歴はありません</div>}
+      <p className="muted small" style={{ margin: '0 0 8px' }}>
+        入荷・在庫調整・原価修正を間違えたときは「修正」「取消」で直せます。物販に持っていく数は「棚卸し」タブで記録します。
+      </p>
+      <StockHistory events={history} />
       <div className="actions">
         <button className="btn" onClick={onClose}>閉じる</button>
       </div>

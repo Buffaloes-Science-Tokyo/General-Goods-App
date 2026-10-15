@@ -92,6 +92,21 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--page); }
 .login-card { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 14px; }
 .login-card h1 { font-size: 18px; margin: 0; }
+.home { min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--page); }
+.home-inner { width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 8px; }
+.home-inner h1 { font-size: 22px; margin: 0; }
+.home-apps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 12px; }
+.home-app {
+  text-align: left; border: 1px solid var(--ring); background: var(--surface); color: var(--ink);
+  border-radius: var(--radius); padding: 20px; cursor: pointer; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 6px; font: inherit; transition: transform 0.06s;
+}
+.home-app:hover { border-color: var(--accent); }
+.home-app:active { transform: scale(0.98); }
+.home-app:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.home-app-icon { font-size: 32px; line-height: 1; }
+.home-app-name { font-size: 17px; font-weight: 700; }
+.home-app-desc { font-size: 13px; color: var(--muted); line-height: 1.5; }
 .login-error { background: var(--critical-soft); color: var(--critical); padding: 8px 10px; border-radius: 8px; font-size: 13px; }
 
 .save-error { background: var(--critical-soft); color: var(--critical); padding: 8px 20px; font-size: 13px; }
@@ -352,6 +367,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   font-weight: 600;
 }
 .remote-banner .small { font-weight: 400; margin-left: 6px; }
+.hub-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.hub-bar .small { color: var(--muted); }
+.hub-bar.remote-banner .small { color: inherit; margin-left: 0; }
 
 /* ---------- 同名商品のまとまり（タイプ・サイズ違い） ---------- */
 .tile.group { border-style: dashed; }
