@@ -7,8 +7,7 @@ export function LoginPage({ app, onBack }: { app: AppId; onBack: () => void }) {
   const { settings, pending } = useStore()
   const appName = APPS.find((a) => a.id === app)!.name
   const [password, setPassword] = useState('')
-  // パスワード変更でのログアウト理由はレジ（同期）のもの
-  const [error, setError] = useState(() => (app === 'register' ? takeLogoutReason() : ''))
+  const [error, setError] = useState(() => takeLogoutReason(app))
   const [busy, setBusy] = useState(false)
 
   return (

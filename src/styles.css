@@ -319,6 +319,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 
 /* ---------- 割引 ---------- */
 .badge.on { background: var(--accent-soft); color: var(--accent); }
+.badge.income { background: var(--accent-soft); color: var(--accent); }
+.badge.expense { background: var(--critical-soft); color: var(--critical); }
 .disc-row { font-size: 14px; }
 .disc-row .num { color: var(--good-text); font-weight: 600; }
 .disc-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }

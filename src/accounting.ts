@@ -1,0 +1,126 @@
+import { dayKey } from './format'
+import type { View } from './store'
+import type { LedgerEntry } from './types'
+
+/**
+ * 会計の収支。手入力の記録に、レジのデータから自動で作る収支を合わせる。
+ * - 収入：店頭・オンラインの売上（取り消した会計は除く。オンラインは送料込みの支払額）
+ * - 支出：入荷した時点の仕入額（数量 × 仕入単価。取り消し・修正を反映）、決済手数料、オンラインの手数料・発送の実費
+ * 仕入は「売れたときの原価」ではなく「仕入れたときの支出」として数える（お金の出入りの考え方）
+ */
+export type Flow = {
+  /** 元の記録のID（販売・在庫の記録・収支の記録） */
+  id: string
+  /** ローカル日付 YYYY-MM-DD */
+  date: string
+  kind: LedgerEntry['kind']
+  category: string
+  amount: number
+  /** レジのデータから自動で作ったもの */
+  auto: boolean
+  memo: string
+}
+
+export const AUTO = {
+  storeSales: '売上（店頭）',
+  onlineSales: '売上（オンライン）',
+  restock: '仕入（入荷）',
+  initial: '仕入（初期在庫）',
+  paymentFee: '決済手数料（キャッシュレス）',
+  onlineFee: '販売手数料（オンライン）',
+  shippingCost: '発送費（オンライン）',
+} as const
+
+export const EXPENSE_CATEGORIES = ['会場費', '交通費', '宿泊費', '送料', '資材・備品', '制作費', '外注費', '広告宣伝費', '通信費', '手数料', '雑費']
+export const INCOME_CATEGORIES = ['売上（その他）', '雑収入']
+
+export const KIND_LABEL = { income: '収入', expense: '支出' } as const
+
+type Source = Pick<View, 'sales' | 'activeStockEvents' | 'products' | 'ledger'>
+
+export function collectFlows({ sales, activeStockEvents, products, ledger }: Source): Flow[] {
+  const flows: Flow[] = []
+  const push = (id: string, date: string, kind: Flow['kind'], category: string, amount: number, memo: string) => {
+    if (amount > 0) flows.push({ id, date, kind, category, amount, auto: true, memo })
+  }
+
+  for (const s of sales) {
+    if (s.voided) continue
+    const date = dayKey(s.at)
+    const online = s.channel === 'online'
+    push(`${s.id}:sale`, date, 'income', online ? AUTO.onlineSales : AUTO.storeSales, s.total, online ? `${s.online?.shop ?? ''} ${s.online?.orderNo ?? ''}`.trim() : `伝票 ${s.receiptNo}`)
+    push(`${s.id}:fee`, date, 'expense', AUTO.paymentFee, s.paymentFee ?? 0, `伝票 ${s.receiptNo}`)
+    if (s.online) {
+      const ref = `${s.online.shop} ${s.online.orderNo}`.trim()
+      push(`${s.id}:onlineFee`, date, 'expense', AUTO.onlineFee, s.online.fee, ref)
+      push(`${s.id}:shipping`, date, 'expense', AUTO.shippingCost, s.online.shippingCost, ref)
+    }
+  }
+
+  const byId = new Map(products.map((p) => [p.id, p]))
+  for (const e of activeStockEvents) {
+    if ((e.reason !== 'restock' && e.reason !== 'initial') || e.delta <= 0) continue
+    const p = byId.get(e.productId)
+    const unit = e.unitCost ?? p?.cost ?? 0
+    const name = p ? [p.name, p.type, p.size].filter(Boolean).join(' ') : '（削除された商品）'
+    push(e.id, dayKey(e.at), 'expense', e.reason === 'restock' ? AUTO.restock : AUTO.initial, e.delta * unit, `${name} ×${e.delta}${e.note ? `（${e.note}）` : ''}`)
+  }
+
+  for (const x of ledger) {
+    flows.push({ id: x.id, date: x.date, kind: x.kind, category: x.category || '未分類', amount: x.amount, auto: false, memo: x.memo })
+  }
+  return flows.sort((a, b) => a.date.localeCompare(b.date))
+}
+
+/** 在庫の仕入（入荷・初期在庫）から自動で作った支出か */
+export const isPurchase = (f: Flow) => f.auto && (f.category === AUTO.restock || f.category === AUTO.initial)
+
+export type Totals = { income: number; expense: number; net: number }
+
+export function totals(flows: Flow[]): Totals {
+  let income = 0
+  let expense = 0
+  for (const f of flows) {
+    if (f.kind === 'income') income += f.amount
+    else expense += f.amount
+  }
+  return { income, expense, net: income - expense }
+}
+
+/** 科目ごとの合計（大きい順） */
+export function byCategory(flows: Flow[], kind: Flow['kind']) {
+  const m = new Map<string, { category: string; amount: number; auto: boolean }>()
+  for (const f of flows) {
+    if (f.kind !== kind) continue
+    const key = `${f.auto ? 'a' : 'm'}:${f.category}`
+    const cur = m.get(key) ?? { category: f.category, amount: 0, auto: f.auto }
+    cur.amount += f.amount
+    m.set(key, cur)
+  }
+  return [...m.entries()].map(([key, v]) => ({ key, ...v })).sort((a, b) => b.amount - a.amount)
+}
+
+/** 月ごとの合計（YYYY-MM の古い順。記録の無い月も 0 で埋める） */
+export function byMonth(flows: Flow[], from: string, to: string) {
+  const months: string[] = []
+  if (from && to) {
+    let y = Number(from.slice(0, 4))
+    let m = Number(from.slice(5, 7))
+    const end = to.slice(0, 7)
+    for (;;) {
+      const key = `${y}-${String(m).padStart(2, '0')}`
+      months.push(key)
+      if (key >= end || months.length > 240) break
+      if (++m > 12) (m = 1), y++
+    }
+  }
+  const map = new Map(months.map((k) => [k, { month: k, income: 0, expense: 0 }]))
+  for (const f of flows) {
+    const k = f.date.slice(0, 7)
+    const row = map.get(k) ?? { month: k, income: 0, expense: 0 }
+    if (f.kind === 'income') row.income += f.amount
+    else row.expense += f.amount
+    map.set(k, row)
+  }
+  return [...map.values()].sort((a, b) => a.month.localeCompare(b.month)).map((r) => ({ ...r, net: r.income - r.expense }))
+}

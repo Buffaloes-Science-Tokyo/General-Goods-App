@@ -4,7 +4,7 @@ export type AppId = 'register' | 'accounting'
 
 export const APPS: { id: AppId; name: string; icon: string; desc: string }[] = [
   { id: 'register', name: 'レジアプリ', icon: '🧾', desc: 'レジ・オンライン注文・商品と在庫・割引・販売履歴・ダッシュボード' },
-  { id: 'accounting', name: '会計アプリ', icon: '📒', desc: '帳簿・経費・収支の管理' },
+  { id: 'accounting', name: '会計アプリ', icon: '📒', desc: '収支の記録・レジの売上と仕入を反映した会計ダッシュボード' },
 ]
 
 export function HomePage({ onOpen }: { onOpen: (id: AppId) => void }) {

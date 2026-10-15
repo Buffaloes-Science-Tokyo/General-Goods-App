@@ -220,6 +220,22 @@ export type ShopSettings = {
   updatedAt: string
 }
 
+/** 会計アプリの収支の記録（手入力分。レジの販売・入荷はダッシュボードで自動的に合算する） */
+export type LedgerEntry = {
+  id: string
+  /** 取引日（ローカル日付 YYYY-MM-DD） */
+  date: string
+  kind: 'income' | 'expense'
+  /** 勘定科目（例：会場費、交通費） */
+  category: string
+  /** 金額（円・正の数） */
+  amount: number
+  memo: string
+  /** 削除済み（同期のため物理削除はしない） */
+  deleted: boolean
+  updatedAt: string
+}
+
 export type SyncChanges = {
   products: Product[]
   sales: Sale[]
@@ -227,6 +243,8 @@ export type SyncChanges = {
   settings: ShopSettings | null
   /** 以前のクライアントは送ってこないので省略可 */
   discountRules?: DiscountRule[]
+  /** 収支の記録。会計アプリでログインしている端末だけがやり取りする */
+  ledger?: LedgerEntry[]
 }
 
 export type SyncRequest = {

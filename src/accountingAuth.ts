@@ -30,8 +30,15 @@ function set(next: string) {
   listeners.forEach((l) => l())
 }
 
+export const getAccountingToken = () => token
 export const setAccountingToken = (t: string) => set(t)
 export const accountingLogout = () => set('')
+
+/** ログイン状態が変わったときに呼ぶ（同期の開始用） */
+export function subscribeAccounting(l: () => void) {
+  listeners.add(l)
+  return () => listeners.delete(l)
+}
 
 // 別のタブでログイン／ログアウトしたら反映する
 window.addEventListener('storage', (e) => {
@@ -42,11 +49,5 @@ window.addEventListener('storage', (e) => {
 })
 
 export function useAccountingToken(): string {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l)
-      return () => listeners.delete(l)
-    },
-    () => token,
-  )
+  return useSyncExternalStore(subscribeAccounting, () => token)
 }

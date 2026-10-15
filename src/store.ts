@@ -3,6 +3,7 @@ import { get as idbGet, set as idbSet } from 'idb-keyval'
 import type {
   DiscountRule,
   FeeSettings,
+  LedgerEntry,
   OnlineOrderInfo,
   PaymentMethod,
   Product,
@@ -25,7 +26,7 @@ import { DEFAULT_FEES } from './pricing'
  * sync.ts がオンライン時に outbox をクラウドへ送り、他端末の変更を受け取って merge する。
  */
 
-type Outbox = { products: string[]; sales: string[]; stockEvents: string[]; discountRules: string[]; settings: boolean }
+type Outbox = { products: string[]; sales: string[]; stockEvents: string[]; discountRules: string[]; ledger: string[]; settings: boolean }
 
 export type LocalState = {
   schema: 2
@@ -33,6 +34,8 @@ export type LocalState = {
   sales: Record<string, Sale>
   stockEvents: Record<string, StockEvent>
   discountRules: Record<string, DiscountRule>
+  /** 会計アプリの収支の記録（会計アプリでログインした端末だけが同期する） */
+  ledger: Record<string, LedgerEntry>
   settings: ShopSettings
   /** この端末の情報（同期しない）。hubId = この端末のレジで選んでいるハブ（無ければベース） */
   device: { id: string; code: string; nextReceipt: number; hubId?: string }
@@ -54,7 +57,7 @@ const randomCode = () => {
   return c[Math.floor(Math.random() * c.length)] + c[Math.floor(Math.random() * c.length)]
 }
 
-const emptyOutbox = (): Outbox => ({ products: [], sales: [], stockEvents: [], discountRules: [], settings: false })
+const emptyOutbox = (): Outbox => ({ products: [], sales: [], stockEvents: [], discountRules: [], ledger: [], settings: false })
 
 const emptyState = (): LocalState => ({
   schema: 2,
@@ -62,6 +65,7 @@ const emptyState = (): LocalState => ({
   sales: {},
   stockEvents: {},
   discountRules: {},
+  ledger: {},
   settings: { shopName: 'グッズ物販', updatedAt: EPOCH },
   device: { id: uid(), code: randomCode(), nextReceipt: 1 },
   outbox: emptyOutbox(),
@@ -101,7 +105,7 @@ async function readPersisted(): Promise<LocalState | null> {
   // 以前のバージョンで保存したデータに無い項目を補う
   // 以前の「合言葉」がそのまま入っている場合はログイン済みとみなさず、パスワードでのログインを求める
   const sync = isSessionToken(saved.sync.token) ? saved.sync : { ...saved.sync, token: '' }
-  return { ...emptyState(), ...saved, sync, discountRules: saved.discountRules ?? {}, outbox: { ...emptyOutbox(), ...saved.outbox } }
+  return { ...emptyState(), ...saved, sync, discountRules: saved.discountRules ?? {}, ledger: saved.ledger ?? {}, outbox: { ...emptyOutbox(), ...saved.outbox } }
 }
 
 /** ログインで受け取るトークンの形式（発行時刻.署名）か */
@@ -135,6 +139,10 @@ export type View = {
   stockEvents: StockEvent[]
   /** 取り消し・修正された記録のID → それを取り消した（置き換えた）記録 */
   cancelledBy: Map<string, StockEvent>
+  /** 取り消し・修正を反映した、在庫数・原価の計算に使う記録（時刻順） */
+  activeStockEvents: StockEvent[]
+  /** 収支の記録（削除済みを除く。日付の新しい順） */
+  ledger: LedgerEntry[]
   /** 削除されていない割引ルール（作成順） */
   discountRules: DiscountRule[]
   stock: Map<string, number>
@@ -177,6 +185,10 @@ function buildView(s: LocalState): View {
     sales: Object.values(s.sales).sort((a, b) => a.at.localeCompare(b.at)),
     stockEvents,
     cancelledBy,
+    activeStockEvents: effective,
+    ledger: Object.values(s.ledger)
+      .filter((x) => !x.deleted)
+      .sort((a, b) => b.date.localeCompare(a.date) || b.updatedAt.localeCompare(a.updatedAt)),
     discountRules: Object.values(s.discountRules)
       .filter((r) => !r.deleted)
       .sort((a, b) => a.name.localeCompare(b.name, 'ja')),
@@ -192,6 +204,7 @@ function buildView(s: LocalState): View {
       s.outbox.sales.length +
       s.outbox.stockEvents.length +
       s.outbox.discountRules.length +
+      s.outbox.ledger.length +
       (s.outbox.settings ? 1 : 0),
     persistError,
   }
@@ -608,6 +621,31 @@ export function updateFees(fees: FeeSettings) {
   })
 }
 
+// ---------- 会計（収支の記録） ----------
+
+export type LedgerInput = Omit<LedgerEntry, 'id' | 'deleted' | 'updatedAt'>
+
+function withLedger(s: LocalState, x: LedgerEntry): LocalState {
+  return { ...s, ledger: { ...s.ledger, [x.id]: x }, outbox: { ...s.outbox, ledger: addId(s.outbox.ledger, x.id) } }
+}
+
+/** 収支を記録する。id を渡すとその記録を書き換える */
+export function saveLedgerEntry(input: LedgerInput, id?: string) {
+  const prev = id ? state.ledger[id] : undefined
+  const x: LedgerEntry = { ...input, amount: Math.max(0, Math.round(input.amount)), id: prev?.id ?? uid(), deleted: false, updatedAt: now() }
+  commit(withLedger(state, x))
+}
+
+export function deleteLedgerEntry(id: string) {
+  const x = state.ledger[id]
+  if (x) commit(withLedger(state, { ...x, deleted: true, updatedAt: now() }))
+}
+
+/** 会計アプリでログインしたとき：収支の記録を最初から受け取り直し、この端末の記録も送り直す */
+export function resyncForAccounting() {
+  commit({ ...state, outbox: { ...state.outbox, ledger: Object.keys(state.ledger) }, sync: { ...state.sync, cursor: 0 } })
+}
+
 // ---------- 棚卸しハブ ----------
 
 /** ハブの一覧を保存する（全端末で共有） */
@@ -667,6 +705,7 @@ export function setSyncToken(token: string) {
       sales: Object.keys(s.sales),
       stockEvents: Object.keys(s.stockEvents),
       discountRules: Object.keys(s.discountRules),
+      ledger: Object.keys(s.ledger),
       settings: s.settings.updatedAt !== EPOCH,
     },
     sync: { ...s.sync, token, cursor: 0 },
@@ -675,8 +714,11 @@ export function setSyncToken(token: string) {
 
 // ---------- 同期（sync.ts から使う） ----------
 
-/** 送信待ちを取り出す（1回のリクエストが大きくなりすぎないよう種類ごとに上限あり） */
-export function collectOutbox(limit = 500): SyncChanges {
+/**
+ * 送信待ちを取り出す（1回のリクエストが大きくなりすぎないよう種類ごとに上限あり）。
+ * 収支の記録は会計アプリでログインしているときだけ送る
+ */
+export function collectOutbox(withLedger: boolean, limit = 500): SyncChanges {
   const s = state
   return {
     products: s.outbox.products.slice(0, limit).map((id) => s.products[id]).filter(Boolean),
@@ -684,6 +726,7 @@ export function collectOutbox(limit = 500): SyncChanges {
     stockEvents: s.outbox.stockEvents.slice(0, limit * 4).map((id) => s.stockEvents[id]).filter(Boolean),
     discountRules: s.outbox.discountRules.slice(0, limit).map((id) => s.discountRules[id]).filter(Boolean),
     settings: s.outbox.settings ? s.settings : null,
+    ...(withLedger ? { ledger: s.outbox.ledger.slice(0, limit).map((id) => s.ledger[id]).filter(Boolean) } : {}),
   }
 }
 
@@ -696,6 +739,7 @@ export function applySyncResult(sent: SyncChanges, remote: SyncChanges, cursor: 
   const sales = { ...s.sales }
   const stockEvents = { ...s.stockEvents }
   const discountRules = { ...s.discountRules }
+  const ledger = { ...s.ledger }
   let settings = s.settings
 
   // 送信できたものは outbox から除く（送信後にさらに編集されたものは残す）
@@ -703,11 +747,13 @@ export function applySyncResult(sent: SyncChanges, remote: SyncChanges, cursor: 
   const sentS = new Map(sent.sales.map((x) => [x.id, x.updatedAt]))
   const sentE = new Set(sent.stockEvents.map((e) => e.id))
   const sentR = new Map((sent.discountRules ?? []).map((r) => [r.id, r.updatedAt]))
+  const sentL = new Map((sent.ledger ?? []).map((x) => [x.id, x.updatedAt]))
   const outbox: Outbox = {
     products: s.outbox.products.filter((id) => sentP.get(id) !== products[id]?.updatedAt),
     sales: s.outbox.sales.filter((id) => sentS.get(id) !== sales[id]?.updatedAt),
     stockEvents: s.outbox.stockEvents.filter((id) => !sentE.has(id)),
     discountRules: s.outbox.discountRules.filter((id) => sentR.get(id) !== discountRules[id]?.updatedAt),
+    ledger: s.outbox.ledger.filter((id) => sentL.get(id) !== ledger[id]?.updatedAt),
     settings: s.outbox.settings && !(sent.settings && sent.settings.updatedAt === s.settings.updatedAt),
   }
 
@@ -719,6 +765,10 @@ export function applySyncResult(sent: SyncChanges, remote: SyncChanges, cursor: 
   for (const r of remote.discountRules ?? []) {
     const local = discountRules[r.id]
     if (!local || t(r.updatedAt) > t(local.updatedAt)) discountRules[r.id] = r
+  }
+  for (const x of remote.ledger ?? []) {
+    const local = ledger[x.id]
+    if (!local || t(x.updatedAt) > t(local.updatedAt)) ledger[x.id] = x
   }
   if (remote.settings && t(remote.settings.updatedAt) > t(settings.updatedAt)) settings = remote.settings
 
@@ -739,6 +789,7 @@ export function applySyncResult(sent: SyncChanges, remote: SyncChanges, cursor: 
     sales,
     stockEvents,
     discountRules,
+    ledger,
     settings,
     outbox,
     sync: { ...s.sync, cursor, lastSyncAt: now() },
@@ -780,6 +831,7 @@ export function importBackup(text: string): string | null {
       sales: [...new Set([...s.outbox.sales, ...Object.keys(b.sales)])],
       stockEvents: [...new Set([...s.outbox.stockEvents, ...Object.keys(b.stockEvents)])],
       discountRules: [...new Set([...s.outbox.discountRules, ...Object.keys(b.discountRules ?? {})])],
+      ledger: s.outbox.ledger,
       settings: s.outbox.settings,
     },
   })
