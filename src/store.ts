@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { get as idbGet, set as idbSet } from 'idb-keyval'
 import type {
+  CashFlowEntry,
   DiscountRule,
   FeeSettings,
   HubPools,
@@ -28,7 +29,15 @@ import { DEFAULT_FEES } from './pricing'
  * sync.ts がオンライン時に outbox をクラウドへ送り、他端末の変更を受け取って merge する。
  */
 
-type Outbox = { products: string[]; sales: string[]; stockEvents: string[]; discountRules: string[]; ledger: string[]; settings: boolean }
+type Outbox = {
+  products: string[]
+  sales: string[]
+  stockEvents: string[]
+  discountRules: string[]
+  ledger: string[]
+  cashFlows: string[]
+  settings: boolean
+}
 
 export type LocalState = {
   schema: 2
@@ -38,6 +47,8 @@ export type LocalState = {
   discountRules: Record<string, DiscountRule>
   /** 会計アプリの収支の記録（会計アプリでログインした端末だけが同期する） */
   ledger: Record<string, LedgerEntry>
+  /** キャッシュフローの記録（収支の記録と同じく会計アプリでログインした端末だけが同期する） */
+  cashFlows: Record<string, CashFlowEntry>
   settings: ShopSettings
   /** この端末の情報（同期しない）。hubId = この端末のレジで選んでいるハブ（無ければベース） */
   device: { id: string; code: string; nextReceipt: number; hubId?: string }
@@ -59,7 +70,7 @@ const randomCode = () => {
   return c[Math.floor(Math.random() * c.length)] + c[Math.floor(Math.random() * c.length)]
 }
 
-const emptyOutbox = (): Outbox => ({ products: [], sales: [], stockEvents: [], discountRules: [], ledger: [], settings: false })
+const emptyOutbox = (): Outbox => ({ products: [], sales: [], stockEvents: [], discountRules: [], ledger: [], cashFlows: [], settings: false })
 
 const emptyState = (): LocalState => ({
   schema: 2,
@@ -68,6 +79,7 @@ const emptyState = (): LocalState => ({
   stockEvents: {},
   discountRules: {},
   ledger: {},
+  cashFlows: {},
   settings: { shopName: 'グッズ物販', updatedAt: EPOCH },
   device: { id: uid(), code: randomCode(), nextReceipt: 1 },
   outbox: emptyOutbox(),
@@ -107,7 +119,7 @@ async function readPersisted(): Promise<LocalState | null> {
   // 以前のバージョンで保存したデータに無い項目を補う
   // 以前の「合言葉」がそのまま入っている場合はログイン済みとみなさず、パスワードでのログインを求める
   const sync = isSessionToken(saved.sync.token) ? saved.sync : { ...saved.sync, token: '' }
-  return { ...emptyState(), ...saved, sync, discountRules: saved.discountRules ?? {}, ledger: saved.ledger ?? {}, outbox: { ...emptyOutbox(), ...saved.outbox } }
+  return { ...emptyState(), ...saved, sync, discountRules: saved.discountRules ?? {}, ledger: saved.ledger ?? {}, cashFlows: saved.cashFlows ?? {}, outbox: { ...emptyOutbox(), ...saved.outbox } }
 }
 
 /** ログインで受け取るトークンの形式（発行時刻.署名）か */
@@ -145,6 +157,8 @@ export type View = {
   activeStockEvents: StockEvent[]
   /** 収支の記録（削除済みを除く。日付の新しい順） */
   ledger: LedgerEntry[]
+  /** キャッシュフローの記録（削除済みを除く。日付の新しい順） */
+  cashFlows: CashFlowEntry[]
   /** 削除されていない割引ルール（作成順） */
   discountRules: DiscountRule[]
   stock: Map<string, number>
@@ -195,6 +209,9 @@ function buildView(s: LocalState): View {
     ledger: Object.values(s.ledger)
       .filter((x) => !x.deleted)
       .sort((a, b) => b.date.localeCompare(a.date) || b.updatedAt.localeCompare(a.updatedAt)),
+    cashFlows: Object.values(s.cashFlows)
+      .filter((x) => !x.deleted)
+      .sort((a, b) => b.date.localeCompare(a.date) || b.updatedAt.localeCompare(a.updatedAt)),
     discountRules: Object.values(s.discountRules)
       .filter((r) => !r.deleted)
       .sort((a, b) => a.name.localeCompare(b.name, 'ja')),
@@ -213,6 +230,7 @@ function buildView(s: LocalState): View {
       s.outbox.stockEvents.length +
       s.outbox.discountRules.length +
       s.outbox.ledger.length +
+      s.outbox.cashFlows.length +
       (s.outbox.settings ? 1 : 0),
     persistError,
   }
@@ -690,9 +708,33 @@ export function updateBasePools(pools: HubPools) {
   })
 }
 
-/** 会計アプリでログインしたとき：収支の記録を最初から受け取り直し、この端末の記録も送り直す */
+// ---------- 会計（キャッシュフロー） ----------
+
+export type CashFlowInput = Omit<CashFlowEntry, 'id' | 'deleted' | 'updatedAt'>
+
+function withCashFlow(s: LocalState, x: CashFlowEntry): LocalState {
+  return { ...s, cashFlows: { ...s.cashFlows, [x.id]: x }, outbox: { ...s.outbox, cashFlows: addId(s.outbox.cashFlows, x.id) } }
+}
+
+/** キャッシュフローを記録する。id を渡すとその記録を書き換える */
+export function saveCashFlow(input: CashFlowInput, id?: string) {
+  const prev = id ? state.cashFlows[id] : undefined
+  const x: CashFlowEntry = { ...input, amount: Math.max(0, Math.round(input.amount)), id: prev?.id ?? uid(), deleted: false, updatedAt: now() }
+  commit(withCashFlow(state, x))
+}
+
+export function deleteCashFlow(id: string) {
+  const x = state.cashFlows[id]
+  if (x) commit(withCashFlow(state, { ...x, deleted: true, updatedAt: now() }))
+}
+
+/** 会計アプリでログインしたとき：収支・キャッシュフローの記録を最初から受け取り直し、この端末の記録も送り直す */
 export function resyncForAccounting() {
-  commit({ ...state, outbox: { ...state.outbox, ledger: Object.keys(state.ledger) }, sync: { ...state.sync, cursor: 0 } })
+  commit({
+    ...state,
+    outbox: { ...state.outbox, ledger: Object.keys(state.ledger), cashFlows: Object.keys(state.cashFlows) },
+    sync: { ...state.sync, cursor: 0 },
+  })
 }
 
 // ---------- 棚卸しハブ ----------
@@ -755,6 +797,7 @@ export function setSyncToken(token: string) {
       stockEvents: Object.keys(s.stockEvents),
       discountRules: Object.keys(s.discountRules),
       ledger: Object.keys(s.ledger),
+      cashFlows: Object.keys(s.cashFlows),
       settings: s.settings.updatedAt !== EPOCH,
     },
     sync: { ...s.sync, token, cursor: 0 },
@@ -775,7 +818,12 @@ export function collectOutbox(withLedger: boolean, limit = 500): SyncChanges {
     stockEvents: s.outbox.stockEvents.slice(0, limit * 4).map((id) => s.stockEvents[id]).filter(Boolean),
     discountRules: s.outbox.discountRules.slice(0, limit).map((id) => s.discountRules[id]).filter(Boolean),
     settings: s.outbox.settings ? s.settings : null,
-    ...(withLedger ? { ledger: s.outbox.ledger.slice(0, limit).map((id) => s.ledger[id]).filter(Boolean) } : {}),
+    ...(withLedger
+      ? {
+          ledger: s.outbox.ledger.slice(0, limit).map((id) => s.ledger[id]).filter(Boolean),
+          cashFlows: s.outbox.cashFlows.slice(0, limit).map((id) => s.cashFlows[id]).filter(Boolean),
+        }
+      : {}),
   }
 }
 
@@ -789,6 +837,7 @@ export function applySyncResult(sent: SyncChanges, remote: SyncChanges, cursor: 
   const stockEvents = { ...s.stockEvents }
   const discountRules = { ...s.discountRules }
   const ledger = { ...s.ledger }
+  const cashFlows = { ...s.cashFlows }
   let settings = s.settings
 
   // 送信できたものは outbox から除く（送信後にさらに編集されたものは残す）
@@ -797,12 +846,14 @@ export function applySyncResult(sent: SyncChanges, remote: SyncChanges, cursor: 
   const sentE = new Set(sent.stockEvents.map((e) => e.id))
   const sentR = new Map((sent.discountRules ?? []).map((r) => [r.id, r.updatedAt]))
   const sentL = new Map((sent.ledger ?? []).map((x) => [x.id, x.updatedAt]))
+  const sentC = new Map((sent.cashFlows ?? []).map((x) => [x.id, x.updatedAt]))
   const outbox: Outbox = {
     products: s.outbox.products.filter((id) => sentP.get(id) !== products[id]?.updatedAt),
     sales: s.outbox.sales.filter((id) => sentS.get(id) !== sales[id]?.updatedAt),
     stockEvents: s.outbox.stockEvents.filter((id) => !sentE.has(id)),
     discountRules: s.outbox.discountRules.filter((id) => sentR.get(id) !== discountRules[id]?.updatedAt),
     ledger: s.outbox.ledger.filter((id) => sentL.get(id) !== ledger[id]?.updatedAt),
+    cashFlows: s.outbox.cashFlows.filter((id) => sentC.get(id) !== cashFlows[id]?.updatedAt),
     settings: s.outbox.settings && !(sent.settings && sent.settings.updatedAt === s.settings.updatedAt),
   }
 
@@ -818,6 +869,10 @@ export function applySyncResult(sent: SyncChanges, remote: SyncChanges, cursor: 
   for (const x of remote.ledger ?? []) {
     const local = ledger[x.id]
     if (!local || t(x.updatedAt) > t(local.updatedAt)) ledger[x.id] = x
+  }
+  for (const x of remote.cashFlows ?? []) {
+    const local = cashFlows[x.id]
+    if (!local || t(x.updatedAt) > t(local.updatedAt)) cashFlows[x.id] = x
   }
   if (remote.settings && t(remote.settings.updatedAt) > t(settings.updatedAt)) settings = remote.settings
 
@@ -839,6 +894,7 @@ export function applySyncResult(sent: SyncChanges, remote: SyncChanges, cursor: 
     stockEvents,
     discountRules,
     ledger,
+    cashFlows,
     settings,
     outbox,
     sync: { ...s.sync, cursor, lastSyncAt: now() },
@@ -881,6 +937,7 @@ export function importBackup(text: string): string | null {
       stockEvents: [...new Set([...s.outbox.stockEvents, ...Object.keys(b.stockEvents)])],
       discountRules: [...new Set([...s.outbox.discountRules, ...Object.keys(b.discountRules ?? {})])],
       ledger: s.outbox.ledger,
+      cashFlows: s.outbox.cashFlows,
       settings: s.outbox.settings,
     },
   })

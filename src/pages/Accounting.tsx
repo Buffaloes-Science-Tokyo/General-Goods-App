@@ -7,11 +7,17 @@ import { ToastHost } from '../components/ui'
 import { AccountingDashboardPage } from './accounting/Dashboard'
 import { LedgerPage } from './accounting/Ledger'
 import { PoolsPage } from './accounting/Pools'
+import { CashFlowPage } from './accounting/CashFlow'
+import { SettlementPage } from './accounting/Settlement'
+import { SimulationPage } from './accounting/Simulation'
 
 const TABS = [
   { id: 'accounting', label: 'ダッシュボード', el: AccountingDashboardPage },
   { id: 'accounting-records', label: '収支の記録', el: LedgerPage },
+  { id: 'accounting-cashflow', label: 'キャッシュフロー', el: CashFlowPage },
+  { id: 'accounting-settlement', label: '徴収返金管理', el: SettlementPage },
   { id: 'accounting-pools', label: 'プール', el: PoolsPage },
+  { id: 'accounting-simulation', label: 'シミュレーション', el: SimulationPage },
 ] as const
 type TabId = (typeof TABS)[number]['id']
 

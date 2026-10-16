@@ -90,6 +90,15 @@ const SCHEMA = [
     seq bigint not null default nextval('sync_seq')
   )`,
   `create index if not exists ledger_entries_seq_idx on ledger_entries (seq)`,
+  // キャッシュフローの記録（収支の記録と同じく会計アプリでログインした端末だけが読み書きする）
+  `create table if not exists cash_flows (
+    id text primary key,
+    data jsonb not null,
+    deleted boolean not null default false,
+    updated_at timestamptz not null,
+    seq bigint not null default nextval('sync_seq')
+  )`,
+  `create index if not exists cash_flows_seq_idx on cash_flows (seq)`,
   `create table if not exists shop_settings (
     id text primary key,
     shop_name text not null,
@@ -167,6 +176,15 @@ on conflict (id) do update set
   data = excluded.data, deleted = excluded.deleted, updated_at = excluded.updated_at, seq = nextval('sync_seq')
 where ledger_entries.updated_at < excluded.updated_at`
 
+// キャッシュフローの記録も同じく jsonb で保存。最後に更新したものが勝つ
+const UPSERT_CASH_FLOWS = `
+insert into cash_flows (id, data, deleted, updated_at)
+select x->>'id', x, coalesce((x->>'deleted')::boolean, false), (x->>'updatedAt')::timestamptz
+from jsonb_array_elements($1::jsonb) as x
+on conflict (id) do update set
+  data = excluded.data, deleted = excluded.deleted, updated_at = excluded.updated_at, seq = nextval('sync_seq')
+where cash_flows.updated_at < excluded.updated_at`
+
 const UPSERT_SETTINGS = `
 insert into shop_settings (id, shop_name, fees, remote, hubs, pools, base_pools, updated_at)
 select 'shop', "shopName", fees, remote, hubs, pools, "basePools", "updatedAt"
@@ -242,11 +260,13 @@ export async function handleSync(
     if (changes.settings) writes.push(sql.query(UPSERT_SETTINGS, [JSON.stringify([changes.settings])]))
     const ledger = accounting ? (changes.ledger ?? []) : []
     if (ledger.length) writes.push(sql.query(UPSERT_LEDGER, [JSON.stringify(ledger)]))
+    const cashFlows = accounting ? (changes.cashFlows ?? []) : []
+    if (cashFlows.length) writes.push(sql.query(UPSERT_CASH_FLOWS, [JSON.stringify(cashFlows)]))
     if (writes.length) {
       await sql.transaction([sql.query('select pg_advisory_xact_lock(727001)'), ...writes])
     }
 
-    const [products, sales, events, settings, discountRules, ledgerRows] = await sql.transaction(
+    const [products, sales, events, settings, discountRules, ledgerRows, cashFlowRows] = await sql.transaction(
       [
         sql.query(
           `select id, name, category, product_type, size, price, cost, extra_cost_store, extra_cost_online, low_stock, sku, active, deleted, updated_at, seq::float8 as seq
@@ -269,6 +289,9 @@ export async function handleSync(
         accounting
           ? sql.query(`select data, seq::float8 as seq from ledger_entries where seq > $1`, [cursor])
           : sql.query(`select 1 where false`),
+        accounting
+          ? sql.query(`select data, seq::float8 as seq from cash_flows where seq > $1`, [cursor])
+          : sql.query(`select 1 where false`),
       ],
       { readOnly: true, isolationLevel: 'RepeatableRead' },
     )
@@ -281,6 +304,7 @@ export async function handleSync(
     bump(settings)
     bump(discountRules)
     bump(ledgerRows)
+    bump(cashFlowRows)
 
     const out: SyncChanges = {
       products: products.map((r) => ({
@@ -300,7 +324,7 @@ export async function handleSync(
         saleId: r.sale_id, deviceId: r.device_id, ...(r.cancels ? { cancels: r.cancels } : {}),
       })),
       discountRules: discountRules.map((r) => r.data),
-      ...(accounting ? { ledger: ledgerRows.map((r) => r.data) } : {}),
+      ...(accounting ? { ledger: ledgerRows.map((r) => r.data), cashFlows: cashFlowRows.map((r) => r.data) } : {}),
       settings: settings[0]
         ? {
             shopName: settings[0].shop_name,

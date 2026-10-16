@@ -7,8 +7,9 @@ import { Modal, NumberInput, toast, toastError } from '../../components/ui'
 
 const today = () => dayKey(new Date())
 const blank = (kind: LedgerEntry['kind'] = 'expense', date = today(), poolId: string | null = null): LedgerInput => ({
-  date, kind, category: '', amount: 0, memo: '', poolId,
+  date, kind, category: '', amount: 0, memo: '', poolId, counterparty: '',
 })
+const clean = (x: LedgerInput): LedgerInput => ({ ...x, category: x.category.trim(), memo: x.memo.trim(), counterparty: (x.counterparty ?? '').trim() })
 
 /** URL の「?pool=…」（プールのタブから開いたとき） */
 const poolFromHash = () => new URLSearchParams(location.hash.split('?')[1] ?? '').get('pool') ?? 'all'
@@ -79,7 +80,7 @@ export function LedgerPage() {
   function add() {
     const err = validate(draft)
     if (err) return toastError(err)
-    saveLedgerEntry({ ...draft, category: draft.category.trim(), memo: draft.memo.trim() })
+    saveLedgerEntry(clean(draft))
     toast(`${KIND_LABEL[draft.kind]} ${yen(draft.amount)} を記録しました`)
     // 続けて入力しやすいよう、日付・種類・プールは残す
     setDraft(blank(draft.kind, draft.date, draft.poolId ?? null))
@@ -89,8 +90,10 @@ export function LedgerPage() {
   const filterName = pool === 'all' ? '' : pool === NO_POOL ? '_未設定' : `_${poolLabel(pool)}`
 
   function exportCsv() {
-    const out: (string | number)[][] = [['日付', '種類', 'プール', '科目', '金額', 'メモ']]
-    for (const x of [...shown].reverse()) out.push([x.date, KIND_LABEL[x.kind], poolLabel(x.poolId), x.category, x.amount, x.memo])
+    const out: (string | number)[][] = [['日付', '種類', 'プール', '科目', 'キャッシュフロー対応', '金額', 'メモ']]
+    for (const x of [...shown].reverse()) {
+      out.push([x.date, KIND_LABEL[x.kind], poolLabel(x.poolId), x.category, x.entry?.counterparty ?? '', x.amount, x.memo])
+    }
     downloadText(`収支の記録_${month || '全期間'}${filterName}.csv`, toCsv(out), 'text/csv')
   }
 
@@ -163,6 +166,7 @@ export function LedgerPage() {
                   <th>種類</th>
                   {pools.length > 0 && <th>プール</th>}
                   <th>科目</th>
+                  <th>キャッシュフロー対応</th>
                   <th>メモ</th>
                   <th className="r">金額</th>
                   <th></th>
@@ -190,6 +194,7 @@ export function LedgerPage() {
                       {x.category}
                       {!x.entry && <span className="badge" style={{ marginLeft: 6 }}>自動</span>}
                     </td>
+                    <td className="small">{x.entry?.counterparty || <span className="muted">—</span>}</td>
                     <td className="muted small">{x.memo}</td>
                     <td className="r num" style={{ fontWeight: 600 }}>
                       {x.kind === 'expense' ? '−' : ''}
@@ -239,6 +244,7 @@ function validate(x: LedgerInput) {
 function EditModal({ entry, onClose }: { entry: LedgerEntry; onClose: () => void }) {
   const [v, setV] = useState<LedgerInput>({
     date: entry.date, kind: entry.kind, category: entry.category, amount: entry.amount, memo: entry.memo, poolId: entry.poolId ?? null,
+    counterparty: entry.counterparty ?? '',
   })
   const err = validate(v)
   return (
@@ -250,7 +256,7 @@ function EditModal({ entry, onClose }: { entry: LedgerEntry; onClose: () => void
           className="btn primary"
           disabled={!!err}
           onClick={() => {
-            saveLedgerEntry({ ...v, category: v.category.trim(), memo: v.memo.trim() }, entry.id)
+            saveLedgerEntry(clean(v), entry.id)
             toast('保存しました')
             onClose()
           }}
@@ -263,7 +269,9 @@ function EditModal({ entry, onClose }: { entry: LedgerEntry; onClose: () => void
 }
 
 function EntryForm({ value: v, onChange }: { value: LedgerInput; onChange: (v: LedgerInput) => void }) {
-  const { ledger, pools } = useStore()
+  const { ledger, pools, cashFlows } = useStore()
+  // 相手名の候補：キャッシュフローの相手 ＋ これまでに収支の記録で入力した相手（候補に無い名前も入力できる）
+  const parties = [...new Set([...cashFlows, ...ledger].map((x) => x.counterparty ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'))
   // 候補：よく使う科目 ＋ これまでに入力した科目
   const used = ledger.filter((x) => x.kind === v.kind).map((x) => x.category)
   const options = [...new Set([...(v.kind === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES), ...used])]
@@ -311,6 +319,21 @@ function EntryForm({ value: v, onChange }: { value: LedgerInput; onChange: (v: L
           </select>
         </label>
       )}
+      <label className="field">
+        キャッシュフロー対応（相手名）
+        <input
+          className="input"
+          list="ledger-cashflow-parties"
+          value={v.counterparty ?? ''}
+          placeholder="任意（キャッシュフローの相手）"
+          onChange={(e) => onChange({ ...v, counterparty: e.target.value })}
+        />
+        <datalist id="ledger-cashflow-parties">
+          {parties.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
+      </label>
       <label className="field">
         金額（円）
         <NumberInput value={v.amount} min={0} onChange={(n) => onChange({ ...v, amount: n })} />

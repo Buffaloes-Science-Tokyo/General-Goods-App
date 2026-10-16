@@ -146,7 +146,7 @@ async function syncOnce() {
     if (currentToken().token !== used.token || getState().sync.cursor !== sync.cursor) return
     applySyncResult(sent, data.changes, data.cursor)
     const sentCount =
-      sent.products.length + sent.sales.length + sent.stockEvents.length + (sent.discountRules?.length ?? 0) + (sent.ledger?.length ?? 0)
+      sent.products.length + sent.sales.length + sent.stockEvents.length + (sent.discountRules?.length ?? 0) + (sent.ledger?.length ?? 0) + (sent.cashFlows?.length ?? 0)
     // 上限で分割した残りがあれば続けて送る
     if (sentCount > 0 && pendingCount() > 0) again = true
     setStatus({ kind: 'ok' })
@@ -186,7 +186,7 @@ export function startAutoSync() {
     lastOutbox = s.outbox
     const o = s.outbox
     // 同期結果の反映で outbox が空になった場合などは送るものがないので何もしない
-    if (!o.products.length && !o.sales.length && !o.stockEvents.length && !o.discountRules.length && !o.ledger.length && !o.settings) return
+    if (!o.products.length && !o.sales.length && !o.stockEvents.length && !o.discountRules.length && !o.ledger.length && !o.cashFlows.length && !o.settings) return
     clearTimeout(timer)
     timer = setTimeout(() => void syncNow(), DEBOUNCE_MS)
   })

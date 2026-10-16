@@ -255,6 +255,30 @@ export type LedgerEntry = {
   memo: string
   /** どのプールの収支か（null・無しは未設定） */
   poolId?: string | null
+  /** キャッシュフロー対応：キャッシュフローの相手名（キャッシュフローに無い名前も入力できる） */
+  counterparty?: string
+  /** 削除済み（同期のため物理削除はしない） */
+  deleted: boolean
+  updatedAt: string
+}
+
+/**
+ * キャッシュフローの記録（会計アプリ）。お金の出入りを相手ごとに記録する。
+ * 収支（ダッシュボード・プールの計算）には含めない。プールとは結び付けない
+ */
+export type CashFlowEntry = {
+  id: string
+  /** ローカル日付 YYYY-MM-DD。期間の記録では開始日 */
+  date: string
+  /** 期間の記録の終了日（YYYY-MM-DD）。日付だけの記録・以前のデータには無い */
+  endDate?: string | null
+  kind: 'income' | 'expense'
+  category: string
+  /** 相手（支払先・受取元） */
+  counterparty: string
+  /** 金額（円・正の数） */
+  amount: number
+  memo: string
   /** 削除済み（同期のため物理削除はしない） */
   deleted: boolean
   updatedAt: string
@@ -269,6 +293,8 @@ export type SyncChanges = {
   discountRules?: DiscountRule[]
   /** 収支の記録。会計アプリでログインしている端末だけがやり取りする */
   ledger?: LedgerEntry[]
+  /** キャッシュフローの記録。収支の記録と同じく会計アプリでログインしている端末だけがやり取りする */
+  cashFlows?: CashFlowEntry[]
 }
 
 export type SyncRequest = {
