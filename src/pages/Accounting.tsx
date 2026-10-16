@@ -6,15 +6,18 @@ import { SyncIndicator } from '../components/SyncIndicator'
 import { ToastHost } from '../components/ui'
 import { AccountingDashboardPage } from './accounting/Dashboard'
 import { LedgerPage } from './accounting/Ledger'
+import { PoolsPage } from './accounting/Pools'
 
 const TABS = [
   { id: 'accounting', label: 'ダッシュボード', el: AccountingDashboardPage },
   { id: 'accounting-records', label: '収支の記録', el: LedgerPage },
+  { id: 'accounting-pools', label: 'プール', el: PoolsPage },
 ] as const
 type TabId = (typeof TABS)[number]['id']
 
 const readHash = (): TabId => {
-  const h = location.hash.slice(1)
+  // 「#accounting-records?pool=…」のように、タブの後ろに絞り込みを付けられる
+  const h = location.hash.slice(1).split('?')[0]
   return (TABS.find((t) => t.id === h)?.id ?? 'accounting') as TabId
 }
 

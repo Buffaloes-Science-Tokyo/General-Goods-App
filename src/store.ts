@@ -3,9 +3,11 @@ import { get as idbGet, set as idbSet } from 'idb-keyval'
 import type {
   DiscountRule,
   FeeSettings,
+  HubPools,
   LedgerEntry,
   OnlineOrderInfo,
   PaymentMethod,
+  Pool,
   Product,
   StockHub,
   Sale,
@@ -157,6 +159,10 @@ export type View = {
   hubs: HubView[]
   /** この端末のレジで選んでいるハブ。ベースなら null */
   hub: HubView | null
+  /** 会計のプール（削除済みを除く。登録順） */
+  pools: Pool[]
+  /** ベースのレジの売上の反映先 */
+  basePools: HubPools
   pending: number
   persistError: string | null
 }
@@ -199,6 +205,8 @@ function buildView(s: LocalState): View {
     device: s.device,
     sync: s.sync,
     ...buildHubs(s),
+    pools: (s.settings.pools ?? []).filter((p) => !p.deleted),
+    basePools: s.settings.basePools ?? NO_POOLS,
     pending:
       s.outbox.products.length +
       s.outbox.sales.length +
@@ -209,6 +217,8 @@ function buildView(s: LocalState): View {
     persistError,
   }
 }
+
+export const NO_POOLS: HubPools = { cash: null, cashless: null }
 
 export type HubView = { hub: StockHub; left: Map<string, number>; sold: Map<string, number> }
 
@@ -458,11 +468,15 @@ export function checkout(
 
   const at = now()
   const { device } = state
-  const hub = getView().hub
+  const { hub, basePools, pools } = getView()
+  // 売上の反映先：選んでいるハブ（またはベース）の設定。会計時点の設定で決めて記録する
+  const target = (hub ? hub.hub.pools ?? NO_POOLS : basePools)[payment === 'cash' ? 'cash' : 'cashless']
+  const poolId = target && pools.some((p) => p.id === target) ? target : null
   const sale: Sale = {
     id: uid(),
     receiptNo: `${device.code}-${String(device.nextReceipt).padStart(4, '0')}`,
     ...(hub ? { remoteEvent: hub.hub.eventId } : {}),
+    ...(poolId ? { poolId } : {}),
     at,
     deviceId: device.id,
     items,
@@ -641,6 +655,41 @@ export function deleteLedgerEntry(id: string) {
   if (x) commit(withLedger(state, { ...x, deleted: true, updatedAt: now() }))
 }
 
+// ---------- 会計（プール） ----------
+
+function savePools(pools: Pool[]) {
+  commit({
+    ...state,
+    settings: { ...state.settings, pools, updatedAt: now() },
+    outbox: { ...state.outbox, settings: true },
+  })
+}
+
+/** プールを追加して、その ID を返す */
+export function addPool(name: string, memo = '') {
+  const pool: Pool = { id: uid(), name: name.trim(), memo: memo.trim(), deleted: false }
+  savePools([...(state.settings.pools ?? []), pool])
+  return pool.id
+}
+
+export function updatePool(id: string, patch: Partial<Pick<Pool, 'name' | 'memo'>>) {
+  savePools((state.settings.pools ?? []).map((p) => (p.id === id ? { ...p, ...patch } : p)))
+}
+
+/** プールを削除する（記録は残り、未設定として数える。名前は記録の表示のために残す） */
+export function deletePool(id: string) {
+  savePools((state.settings.pools ?? []).map((p) => (p.id === id ? { ...p, deleted: true } : p)))
+}
+
+/** ベースのレジの売上の反映先を設定する */
+export function updateBasePools(pools: HubPools) {
+  commit({
+    ...state,
+    settings: { ...state.settings, basePools: pools, updatedAt: now() },
+    outbox: { ...state.outbox, settings: true },
+  })
+}
+
 /** 会計アプリでログインしたとき：収支の記録を最初から受け取り直し、この端末の記録も送り直す */
 export function resyncForAccounting() {
   commit({ ...state, outbox: { ...state.outbox, ledger: Object.keys(state.ledger) }, sync: { ...state.sync, cursor: 0 } })
@@ -664,8 +713,8 @@ export function addHub(name: string) {
   return hub.id
 }
 
-/** ハブの名前・持ち出し数を変える */
-export function updateHub(id: string, patch: Partial<Pick<StockHub, 'name' | 'allocations'>>) {
+/** ハブの名前・持ち出し数・売上の反映先を変える */
+export function updateHub(id: string, patch: Partial<Pick<StockHub, 'name' | 'allocations' | 'pools'>>) {
   saveHubs(hubsOf(state.settings).map((h) => (h.id === id ? { ...h, ...patch } : h)))
 }
 

@@ -100,6 +100,9 @@ const SCHEMA = [
   `alter table sales add column if not exists remote_event text`,
   `alter table shop_settings add column if not exists remote jsonb`,
   `alter table shop_settings add column if not exists hubs jsonb`,
+  `alter table shop_settings add column if not exists pools jsonb`,
+  `alter table shop_settings add column if not exists base_pools jsonb`,
+  `alter table sales add column if not exists pool_id text`,
 ]
 
 const UPSERT_PRODUCTS = `
@@ -120,12 +123,12 @@ on conflict (id) do update set
 where products.updated_at < excluded.updated_at`
 
 const UPSERT_SALES = `
-insert into sales (id, receipt_no, channel, remote_event, online, at, device_id, items, subtotal, discount, discounts, total, payment_fee,
+insert into sales (id, receipt_no, channel, remote_event, pool_id, online, at, device_id, items, subtotal, discount, discounts, total, payment_fee,
   payment, received, change_amount, voided, updated_at)
-select id, "receiptNo", coalesce(channel, 'store'), "remoteEvent", online, at, "deviceId", items, subtotal, discount, coalesce(discounts, '[]'),
+select id, "receiptNo", coalesce(channel, 'store'), "remoteEvent", "poolId", online, at, "deviceId", items, subtotal, discount, coalesce(discounts, '[]'),
   total, coalesce("paymentFee", 0), payment, received, change, voided, "updatedAt"
 from jsonb_to_recordset($1::jsonb) as x(
-  id text, "receiptNo" text, channel text, "remoteEvent" text, online jsonb, at timestamptz, "deviceId" text, items jsonb, subtotal integer,
+  id text, "receiptNo" text, channel text, "remoteEvent" text, "poolId" text, online jsonb, at timestamptz, "deviceId" text, items jsonb, subtotal integer,
   discount integer, discounts jsonb, total integer, "paymentFee" integer, payment text, received integer, change integer,
   voided boolean, "updatedAt" timestamptz)
 -- 商品は変えない。オンライン注文の情報（発送状況・送料など）は新しい方、取消はどちらかで取り消されていれば取消
@@ -165,12 +168,14 @@ on conflict (id) do update set
 where ledger_entries.updated_at < excluded.updated_at`
 
 const UPSERT_SETTINGS = `
-insert into shop_settings (id, shop_name, fees, remote, hubs, updated_at)
-select 'shop', "shopName", fees, remote, hubs, "updatedAt"
-from jsonb_to_recordset($1::jsonb) as x("shopName" text, fees jsonb, remote jsonb, hubs jsonb, "updatedAt" timestamptz)
+insert into shop_settings (id, shop_name, fees, remote, hubs, pools, base_pools, updated_at)
+select 'shop', "shopName", fees, remote, hubs, pools, "basePools", "updatedAt"
+from jsonb_to_recordset($1::jsonb) as x("shopName" text, fees jsonb, remote jsonb, hubs jsonb, pools jsonb, "basePools" jsonb, "updatedAt" timestamptz)
 on conflict (id) do update set
   shop_name = excluded.shop_name, fees = coalesce(excluded.fees, shop_settings.fees),
-  remote = coalesce(excluded.remote, shop_settings.remote), hubs = coalesce(excluded.hubs, shop_settings.hubs), updated_at = excluded.updated_at, seq = nextval('sync_seq')
+  remote = coalesce(excluded.remote, shop_settings.remote), hubs = coalesce(excluded.hubs, shop_settings.hubs),
+  pools = coalesce(excluded.pools, shop_settings.pools), base_pools = coalesce(excluded.base_pools, shop_settings.base_pools),
+  updated_at = excluded.updated_at, seq = nextval('sync_seq')
 where shop_settings.updated_at < excluded.updated_at`
 
 const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : new Date(String(v)).toISOString())
@@ -249,7 +254,7 @@ export async function handleSync(
           [cursor],
         ),
         sql.query(
-          `select id, receipt_no, channel, remote_event, online, at, device_id, items, subtotal, discount, discounts, total, payment_fee, payment, received, change_amount,
+          `select id, receipt_no, channel, remote_event, pool_id, online, at, device_id, items, subtotal, discount, discounts, total, payment_fee, payment, received, change_amount,
                   voided, updated_at, seq::float8 as seq
            from sales where seq > $1`,
           [cursor],
@@ -259,7 +264,7 @@ export async function handleSync(
            from stock_events where seq > $1`,
           [cursor],
         ),
-        sql.query(`select shop_name, fees, remote, hubs, updated_at, seq::float8 as seq from shop_settings where seq > $1`, [cursor]),
+        sql.query(`select shop_name, fees, remote, hubs, pools, base_pools, updated_at, seq::float8 as seq from shop_settings where seq > $1`, [cursor]),
         sql.query(`select data, seq::float8 as seq from discount_rules where seq > $1`, [cursor]),
         accounting
           ? sql.query(`select data, seq::float8 as seq from ledger_entries where seq > $1`, [cursor])
@@ -285,6 +290,7 @@ export async function handleSync(
       })),
       sales: sales.map((r) => ({
         id: r.id, receiptNo: r.receipt_no, channel: r.channel, ...(r.remote_event ? { remoteEvent: r.remote_event } : {}),
+        ...(r.pool_id ? { poolId: r.pool_id } : {}),
         ...(r.online ? { online: r.online } : {}), at: iso(r.at), deviceId: r.device_id, items: r.items,
         subtotal: r.subtotal, discount: r.discount, discounts: r.discounts, total: r.total, paymentFee: r.payment_fee, payment: r.payment, received: r.received,
         change: r.change_amount, voided: r.voided, updatedAt: iso(r.updated_at),
@@ -301,6 +307,8 @@ export async function handleSync(
             ...(settings[0].fees ? { fees: settings[0].fees } : {}),
             ...(settings[0].remote ? { remote: settings[0].remote } : {}),
             ...(settings[0].hubs ? { hubs: settings[0].hubs } : {}),
+            ...(settings[0].pools ? { pools: settings[0].pools } : {}),
+            ...(settings[0].base_pools ? { basePools: settings[0].base_pools } : {}),
             updatedAt: iso(settings[0].updated_at),
           }
         : null,

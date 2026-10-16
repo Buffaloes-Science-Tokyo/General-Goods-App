@@ -1,6 +1,6 @@
 import { dayKey } from './format'
 import type { View } from './store'
-import type { LedgerEntry } from './types'
+import type { LedgerEntry, Sale } from './types'
 
 /**
  * 会計の収支。手入力の記録に、レジのデータから自動で作る収支を合わせる。
@@ -19,6 +19,8 @@ export type Flow = {
   /** レジのデータから自動で作ったもの */
   auto: boolean
   memo: string
+  /** どのプールの収支か（未設定・削除されたプールは null） */
+  poolId: string | null
 }
 
 export const AUTO = {
@@ -36,20 +38,38 @@ export const INCOME_CATEGORIES = ['売上（その他）', '雑収入']
 
 export const KIND_LABEL = { income: '収入', expense: '支出' } as const
 
-type Source = Pick<View, 'sales' | 'activeStockEvents' | 'products' | 'ledger'>
+type Source = Pick<View, 'sales' | 'activeStockEvents' | 'products' | 'ledger' | 'hubs' | 'pools' | 'basePools'>
 
-export function collectFlows({ sales, activeStockEvents, products, ledger }: Source): Flow[] {
+/** 未設定の行をまとめるキー（プールの絞り込みで使う） */
+export const NO_POOL = 'none'
+
+/**
+ * 店頭の会計の反映先プール。会計時に記録したプールがあればそれ、無ければ（以前の会計や、未設定だったとき）
+ * 今のハブ（またはベース）の設定から決める。オンラインの注文はどのハブにも属さないので未設定
+ */
+function salePool(s: Sale, { hubs, basePools }: Pick<Source, 'hubs' | 'basePools'>): string | null {
+  if (s.poolId) return s.poolId
+  if (s.channel === 'online') return null
+  const pools = s.remoteEvent ? hubs.find((h) => h.hub.eventId === s.remoteEvent)?.hub.pools : basePools
+  return pools?.[s.payment === 'cash' ? 'cash' : 'cashless'] ?? null
+}
+
+export function collectFlows({ sales, activeStockEvents, products, ledger, hubs, pools, basePools }: Source): Flow[] {
+  const live = new Set(pools.map((p) => p.id))
+  const pool = (id: string | null | undefined) => (id && live.has(id) ? id : null)
   const flows: Flow[] = []
-  const push = (id: string, date: string, kind: Flow['kind'], category: string, amount: number, memo: string) => {
-    if (amount > 0) flows.push({ id, date, kind, category, amount, auto: true, memo })
+  const push = (id: string, date: string, kind: Flow['kind'], category: string, amount: number, memo: string, poolId: string | null = null) => {
+    if (amount > 0) flows.push({ id, date, kind, category, amount, auto: true, memo, poolId })
   }
 
   for (const s of sales) {
     if (s.voided) continue
     const date = dayKey(s.at)
     const online = s.channel === 'online'
-    push(`${s.id}:sale`, date, 'income', online ? AUTO.onlineSales : AUTO.storeSales, s.total, online ? `${s.online?.shop ?? ''} ${s.online?.orderNo ?? ''}`.trim() : `伝票 ${s.receiptNo}`)
-    push(`${s.id}:fee`, date, 'expense', AUTO.paymentFee, s.paymentFee ?? 0, `伝票 ${s.receiptNo}`)
+    const p = pool(salePool(s, { hubs, basePools }))
+    push(`${s.id}:sale`, date, 'income', online ? AUTO.onlineSales : AUTO.storeSales, s.total, online ? `${s.online?.shop ?? ''} ${s.online?.orderNo ?? ''}`.trim() : `伝票 ${s.receiptNo}`, p)
+    // キャッシュレスの手数料は、売上と同じプールから引かれる（入金額が手数料の分だけ少ない）
+    push(`${s.id}:fee`, date, 'expense', AUTO.paymentFee, s.paymentFee ?? 0, `伝票 ${s.receiptNo}`, p)
     if (s.online) {
       const ref = `${s.online.shop} ${s.online.orderNo}`.trim()
       push(`${s.id}:onlineFee`, date, 'expense', AUTO.onlineFee, s.online.fee, ref)
@@ -67,7 +87,7 @@ export function collectFlows({ sales, activeStockEvents, products, ledger }: Sou
   }
 
   for (const x of ledger) {
-    flows.push({ id: x.id, date: x.date, kind: x.kind, category: x.category || '未分類', amount: x.amount, auto: false, memo: x.memo })
+    flows.push({ id: x.id, date: x.date, kind: x.kind, category: x.category || '未分類', amount: x.amount, auto: false, memo: x.memo, poolId: pool(x.poolId) })
   }
   return flows.sort((a, b) => a.date.localeCompare(b.date))
 }
@@ -85,6 +105,20 @@ export function totals(flows: Flow[]): Totals {
     else expense += f.amount
   }
   return { income, expense, net: income - expense }
+}
+
+/** プールごとの合計（プールの登録順。未設定は NO_POOL で最後） */
+export function byPool(flows: Flow[], pools: View['pools']) {
+  const m = new Map<string, Totals>([...pools.map((p) => [p.id, { income: 0, expense: 0, net: 0 }] as const)])
+  for (const f of flows) {
+    const k = f.poolId ?? NO_POOL
+    const cur = m.get(k) ?? { income: 0, expense: 0, net: 0 }
+    if (f.kind === 'income') cur.income += f.amount
+    else cur.expense += f.amount
+    cur.net = cur.income - cur.expense
+    m.set(k, cur)
+  }
+  return m
 }
 
 /** 科目ごとの合計（大きい順） */

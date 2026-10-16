@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
-import { addHub, BASE_HUB_NAME, deleteHub, resetHubSold, updateHub, useStore } from '../store'
+import { addHub, BASE_HUB_NAME, deleteHub, NO_POOLS, resetHubSold, updateBasePools, updateHub, useStore } from '../store'
 import { fullName } from '../format'
-import type { StockHub } from '../types'
+import type { HubPools, StockHub } from '../types'
 import { NumberInput, toast, toastError } from './ui'
 
 /** 棚卸しハブの追加・編集と、ハブごとの持ち出し数 */
 export function HubsCard() {
-  const { hubs } = useStore()
+  const { hubs, basePools } = useStore()
   // 編集中のハブ（null = ベース）
   const [sel, setSel] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
@@ -68,10 +68,13 @@ export function HubsCard() {
       {current ? (
         <HubEditor key={current.hub.id} hub={current.hub} sold={current.sold} onDeleted={() => setSel(null)} />
       ) : (
-        <div className="muted small" style={{ padding: '8px 0' }}>
-          「{BASE_HUB_NAME}」はすべての在庫です。名前や持ち出し数は変更できません。
-          {hubs.length === 0 && '「＋ ハブを追加」で持っていく先を登録してください。'}
-        </div>
+        <>
+          <div className="muted small" style={{ padding: '8px 0' }}>
+            「{BASE_HUB_NAME}」はすべての在庫です。名前や持ち出し数は変更できません。
+            {hubs.length === 0 && '「＋ ハブを追加」で持っていく先を登録してください。'}
+          </div>
+          <PoolSelects value={basePools} onChange={updateBasePools} />
+        </>
       )}
     </div>
   )
@@ -124,6 +127,10 @@ function HubEditor({ hub, sold, onDeleted }: { hub: StockHub; sold: Map<string, 
           商品を探す
           <input className="input" value={query} placeholder="商品名・カテゴリ・商品コード" onChange={(e) => setQuery(e.target.value)} />
         </label>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <PoolSelects value={hub.pools ?? NO_POOLS} onChange={(pools) => updateHub(hub.id, { pools })} />
       </div>
 
       <div style={{ overflowX: 'auto', marginTop: 12 }}>
@@ -191,5 +198,37 @@ function HubEditor({ hub, sold, onDeleted }: { hub: StockHub; sold: Map<string, 
         </button>
       </div>
     </>
+  )
+}
+
+/** レジの売上（現金・キャッシュレス）を反映する会計のプール。選んだらすぐ保存する */
+function PoolSelects({ value, onChange }: { value: HubPools; onChange: (v: HubPools) => void }) {
+  const { pools } = useStore()
+  if (!pools.length) {
+    return <p className="muted small" style={{ margin: 0 }}>売上の反映先にする会計のプールは、会計アプリの「プール」で追加できます。</p>
+  }
+  const select = (key: keyof HubPools, label: string) => (
+    <label className="field">
+      {label}
+      <select
+        className="input"
+        value={pools.some((p) => p.id === value[key]) ? value[key]! : ''}
+        onChange={(e) => {
+          onChange({ ...value, [key]: e.target.value || null })
+          toast('売上の反映先を保存しました')
+        }}
+      >
+        <option value="">未設定</option>
+        {pools.map((p) => (
+          <option key={p.id} value={p.id}>{p.name}</option>
+        ))}
+      </select>
+    </label>
+  )
+  return (
+    <div className="form-grid">
+      {select('cash', '現金の売上の反映先（会計のプール）')}
+      {select('cashless', 'キャッシュレスの売上の反映先（会計のプール）')}
+    </div>
   )
 }

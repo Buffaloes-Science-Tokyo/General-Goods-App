@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useStore } from '../../store'
 import { dayKey, downloadText, toCsv, yen } from '../../format'
-import { byCategory, byMonth, collectFlows, KIND_LABEL, totals, type Flow } from '../../accounting'
+import { byCategory, byMonth, byPool, collectFlows, KIND_LABEL, NO_POOL, totals, type Flow } from '../../accounting'
 import { BarList } from '../../components/charts'
 
 type Preset = 'thisMonth' | 'lastMonth' | 'thisYear' | 'all' | 'custom'
@@ -21,10 +21,10 @@ const signedYen = (n: number) => (n < 0 ? `−${yen(-n)}` : yen(n))
 const monthLabel = (k: string) => `${k.slice(0, 4)}年${Number(k.slice(5))}月`
 
 export function AccountingDashboardPage() {
-  const { sales, activeStockEvents, products, ledger } = useStore()
+  const { sales, activeStockEvents, products, ledger, hubs, pools, basePools } = useStore()
   const flows = useMemo(
-    () => collectFlows({ sales, activeStockEvents, products, ledger }),
-    [sales, activeStockEvents, products, ledger],
+    () => collectFlows({ sales, activeStockEvents, products, ledger, hubs, pools, basePools }),
+    [sales, activeStockEvents, products, ledger, hubs, pools, basePools],
   )
   const [preset, setPreset] = useState<Preset>('thisMonth')
   const [custom, setCustom] = useState<[string, string]>(() => presetRange('thisMonth', []))
@@ -37,10 +37,14 @@ export function AccountingDashboardPage() {
   const incomeCats = byCategory(inRange, 'income')
   const expenseCats = byCategory(inRange, 'expense')
   const months = byMonth(inRange, from, to)
+  const poolTotals = byPool(inRange, pools)
+  const poolName = new Map(pools.map((p) => [p.id, p.name]))
 
   function exportCsv() {
-    const rows: (string | number)[][] = [['日付', '種類', '科目', '金額', '自動/手入力', 'メモ']]
-    for (const f of inRange) rows.push([f.date, KIND_LABEL[f.kind], f.category, f.amount, f.auto ? 'レジから自動' : '手入力', f.memo])
+    const rows: (string | number)[][] = [['日付', '種類', 'プール', '科目', '金額', '自動/手入力', 'メモ']]
+    for (const f of inRange) {
+      rows.push([f.date, KIND_LABEL[f.kind], f.poolId ? poolName.get(f.poolId) ?? '' : '', f.category, f.amount, f.auto ? 'レジから自動' : '手入力', f.memo])
+    }
     downloadText(`収支明細_${from}_${to}.csv`, toCsv(rows), 'text/csv')
   }
 
@@ -112,6 +116,36 @@ export function AccountingDashboardPage() {
           {expenseCats.length ? <BarList items={catItems(expenseCats)} format={yen} /> : <div className="empty">この期間の支出はありません</div>}
         </div>
       </div>
+
+      {pools.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h2>プール別の収支</h2>
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>プール</th>
+                  <th className="r">収入</th>
+                  <th className="r">支出</th>
+                  <th className="r">収支</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...poolTotals].map(([id, r]) => (
+                  <tr key={id}>
+                    <td className={id === NO_POOL ? 'muted' : undefined}>{id === NO_POOL ? '未設定' : poolName.get(id)}</td>
+                    <td className="r num">{yen(r.income)}</td>
+                    <td className="r num">{yen(r.expense)}</td>
+                    <td className="r num" style={{ fontWeight: 700, color: r.net < 0 ? 'var(--critical)' : undefined }}>
+                      {signedYen(r.net)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="card" style={{ marginTop: 16 }}>
         <h2>月別の収支</h2>

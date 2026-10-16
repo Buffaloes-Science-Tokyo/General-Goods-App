@@ -83,6 +83,8 @@ export type Sale = {
   channel?: SalesChannel
   /** ハブ（ベース以外）のレジで会計したとき、そのハブの集計ID（StockHub.eventId） */
   remoteEvent?: string
+  /** 会計時に反映先として設定されていたプールのID（未設定だったときは無し。会計で、その時点のハブの設定から決める） */
+  poolId?: string
   online?: OnlineOrderInfo
   at: string
   deviceId: string
@@ -191,6 +193,22 @@ export type StockHub = {
   allocations: Record<string, number>
   /** 売れた数を数える区切りのID。「売れた数をリセット」で新しくなり、その後の会計だけを数える */
   eventId: string
+  /** このハブのレジの売上の反映先プール。以前のデータには無い */
+  pools?: HubPools
+}
+
+/** レジの売上をどのプールに反映するか（現金・キャッシュレス別。null は未設定） */
+export type HubPools = { cash: string | null; cashless: string | null }
+
+/**
+ * 会計のプール（全端末で共有）。現金の手元・口座など、お金の置き場所ごとに収支をまとめる。
+ * 削除しても記録から名前を引けるよう、deleted で残す
+ */
+export type Pool = {
+  id: string
+  name: string
+  memo: string
+  deleted: boolean
 }
 
 /**
@@ -217,6 +235,10 @@ export type ShopSettings = {
   remote?: RemoteSettings
   /** 棚卸しハブ（ベース以外）。以前のデータには無い */
   hubs?: StockHub[]
+  /** 会計のプール。以前のデータには無い */
+  pools?: Pool[]
+  /** ベースのレジの売上の反映先プール。以前のデータには無い */
+  basePools?: HubPools
   updatedAt: string
 }
 
@@ -231,6 +253,8 @@ export type LedgerEntry = {
   /** 金額（円・正の数） */
   amount: number
   memo: string
+  /** どのプールの収支か（null・無しは未設定） */
+  poolId?: string | null
   /** 削除済み（同期のため物理削除はしない） */
   deleted: boolean
   updatedAt: string
