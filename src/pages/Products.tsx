@@ -6,6 +6,7 @@ import { compareSize, groupByName, downloadText, fullName, pct, toCsv, yen } fro
 import type { Product } from '../types'
 import { Modal, NumberInput, StockBadge, toast, VariantSummary } from '../components/ui'
 import { StockHistory } from '../components/StockHistory'
+import { downloadXlsx } from '../xlsx'
 
 /** 平均原価は小数になりうるので、表示は円未満を四捨五入 */
 const costYen = (n: number) => yen(Math.round(n))
@@ -69,6 +70,15 @@ export function ProductsPage() {
     downloadText(`在庫一覧_${new Date().toISOString().slice(0, 10)}.csv`, toCsv(rows), 'text/csv')
   }
 
+  /** 商品名・在庫数・平均原価・販売価格だけの Excel 一覧（同じ商品名はまとめて並べる） */
+  function exportXlsx() {
+    const rows: (string | number)[][] = [['商品名', '在庫数', '平均原価', '販売価格']]
+    for (const g of groupByName(products)) {
+      for (const p of g.items) rows.push([fullName(p), stock.get(p.id) ?? 0, Math.round(avgOf(p)), p.price])
+    }
+    downloadXlsx(`在庫リスト_${new Date().toISOString().slice(0, 10)}.xlsx`, '在庫リスト', rows, [40, 10, 12, 12])
+  }
+
   function productRow(p: Product, child: boolean) {
     const s = stock.get(p.id) ?? 0
     const avg = avgOf(p)
@@ -122,6 +132,7 @@ export function ProductsPage() {
       <div className="page-head">
         <h1>商品・在庫・価格</h1>
         <button className="btn" onClick={exportCsv} disabled={!products.length}>CSV出力</button>
+        <button className="btn" onClick={exportXlsx} disabled={!products.length}>Excel出力</button>
         <button className="btn primary" onClick={() => setEditing('new')}>＋ 商品を追加</button>
       </div>
 
