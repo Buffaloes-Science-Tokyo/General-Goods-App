@@ -112,6 +112,13 @@ const SCHEMA = [
   `alter table shop_settings add column if not exists pools jsonb`,
   `alter table shop_settings add column if not exists base_pools jsonb`,
   `alter table sales add column if not exists pool_id text`,
+  // 収支の記録・キャッシュフローに添付した画像（同期の対象ではなく、/api/attachments で1件ずつ送受信する）
+  `create table if not exists attachments (
+    id text primary key,
+    mime text not null,
+    data bytea not null,
+    created_at timestamptz not null default now()
+  )`,
 ]
 
 const UPSERT_PRODUCTS = `
@@ -200,7 +207,7 @@ const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : new Date(Stri
 
 let schemaReady: Promise<unknown> | null = null
 
-function ensureSchema(sql: NeonQueryFunction<false, false>) {
+export function ensureSchema(sql: NeonQueryFunction<false, false>) {
   schemaReady ??= sql.transaction(SCHEMA.map((q) => sql.query(q))).catch((e) => {
     schemaReady = null
     throw e

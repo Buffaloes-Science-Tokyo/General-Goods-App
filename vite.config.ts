@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import type { NeonQueryFunction } from '@neondatabase/serverless'
 
 /**
- * 開発時に /api/sync・/api/login を Vercel と同じハンドラで動かす。
+ * 開発時に /api/sync・/api/login・/api/attachments を Vercel と同じハンドラで動かす。
  * .env に DATABASE_URL があれば Neon に、無ければ組み込み Postgres（PGlite, .pglite/ に保存）につなぐ。
  */
 function devSyncApi(env: Record<string, string>): Plugin {
@@ -51,6 +51,21 @@ function devSyncApi(env: Record<string, string>): Plugin {
         try {
           const { handleLogin } = (await server.ssrLoadModule('/server/auth.ts')) as typeof import('./server/auth')
           await send(res, await handleLogin(await toRequest(req), syncEnv))
+        } catch (e) {
+          res.statusCode = 500
+          res.end(String(e))
+        }
+      })
+
+      server.middlewares.use('/api/attachments', async (req, res) => {
+        try {
+          const request = await toRequest(req)
+          const localSqlResolved = useLocal ? await getLocalSql() : null
+          const { handleAttachment } = (await server.ssrLoadModule('/server/attachmentsHandler.ts')) as typeof import('./server/attachmentsHandler')
+          const response = useLocal
+            ? await handleAttachment(request, syncEnv, () => localSqlResolved!)
+            : await handleAttachment(request, syncEnv)
+          await send(res, response)
         } catch (e) {
           res.statusCode = 500
           res.end(String(e))

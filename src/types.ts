@@ -242,6 +242,20 @@ export type ShopSettings = {
   updatedAt: string
 }
 
+/**
+ * 記録に添付した画像（レシートなど）の情報。画像そのものは記録とは別に送受信する（attachments.ts）。
+ * 記録にはこの情報だけを持たせ、同期の量を増やさない
+ */
+export type Attachment = {
+  id: string
+  /** 元のファイル名（保存するときの名前） */
+  name: string
+  /** 保存した画像の形式（image/jpeg など） */
+  type: string
+  /** 保存した画像のサイズ（バイト） */
+  size: number
+}
+
 /** 会計アプリの収支の記録（手入力分。レジの販売・入荷はダッシュボードで自動的に合算する） */
 export type LedgerEntry = {
   id: string
@@ -257,6 +271,8 @@ export type LedgerEntry = {
   poolId?: string | null
   /** キャッシュフロー対応：キャッシュフローの相手名（キャッシュフローに無い名前も入力できる） */
   counterparty?: string
+  /** 添付した画像（以前のデータには無い） */
+  attachments?: Attachment[]
   /** 削除済み（同期のため物理削除はしない） */
   deleted: boolean
   updatedAt: string
@@ -279,6 +295,8 @@ export type CashFlowEntry = {
   /** 金額（円・正の数） */
   amount: number
   memo: string
+  /** 添付した画像（以前のデータには無い） */
+  attachments?: Attachment[]
   /** 削除済み（同期のため物理削除はしない） */
   deleted: boolean
   updatedAt: string

@@ -10,6 +10,7 @@ import {
   subscribeStore,
 } from './store'
 import { accountingLogout, getAccountingToken, setAccountingToken, subscribeAccounting } from './accountingAuth'
+import { uploadPending } from './attachments'
 import type { SyncRequest, SyncResponse } from './types'
 
 export type SyncStatus =
@@ -150,6 +151,8 @@ async function syncOnce() {
     // 上限で分割した残りがあれば続けて送る
     if (sentCount > 0 && pendingCount() > 0) again = true
     setStatus({ kind: 'ok' })
+    // 添付画像は記録とは別に送る（送信待ちがあれば）
+    if (used.accounting) void uploadPending()
   } catch {
     // fetch 自体の失敗 = 電波が切れた等。次の機会に再送する
     setStatus(navigator.onLine ? { kind: 'error', message: 'サーバーに接続できません' } : { kind: 'offline' })

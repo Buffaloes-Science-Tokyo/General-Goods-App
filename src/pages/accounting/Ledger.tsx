@@ -1,13 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 import { deleteLedgerEntry, saveLedgerEntry, useStore, type LedgerInput } from '../../store'
 import { dayKey, downloadText, toCsv, yen } from '../../format'
 import { collectFlows, EXPENSE_CATEGORIES, INCOME_CATEGORIES, isPurchase, KIND_LABEL, NO_POOL } from '../../accounting'
 import type { LedgerEntry } from '../../types'
 import { Modal, NumberInput, toast, toastError } from '../../components/ui'
+import { AttachmentPicker, AttachmentsButton } from '../../components/Attachments'
+import { queueUploads } from '../../attachments'
 
 const today = () => dayKey(new Date())
 const blank = (kind: LedgerEntry['kind'] = 'expense', date = today(), poolId: string | null = null): LedgerInput => ({
-  date, kind, category: '', amount: 0, memo: '', poolId, counterparty: '',
+  date, kind, category: '', amount: 0, memo: '', poolId, counterparty: '', attachments: [],
 })
 const clean = (x: LedgerInput): LedgerInput => ({ ...x, category: x.category.trim(), memo: x.memo.trim(), counterparty: (x.counterparty ?? '').trim() })
 
@@ -81,6 +83,7 @@ export function LedgerPage() {
     const err = validate(draft)
     if (err) return toastError(err)
     saveLedgerEntry(clean(draft))
+    queueUploads(draft.attachments)
     toast(`${KIND_LABEL[draft.kind]} ${yen(draft.amount)} を記録しました`)
     // 続けて入力しやすいよう、日付・種類・プールは残す
     setDraft(blank(draft.kind, draft.date, draft.poolId ?? null))
@@ -195,7 +198,10 @@ export function LedgerPage() {
                       {!x.entry && <span className="badge" style={{ marginLeft: 6 }}>自動</span>}
                     </td>
                     <td className="small">{x.entry?.counterparty || <span className="muted">—</span>}</td>
-                    <td className="muted small">{x.memo}</td>
+                    <td className="muted small">
+                      {x.memo}
+                      <AttachmentsButton items={x.entry?.attachments} title={`${x.date} ${x.category} の画像`} />
+                    </td>
                     <td className="r num" style={{ fontWeight: 600 }}>
                       {x.kind === 'expense' ? '−' : ''}
                       {yen(x.amount)}
@@ -244,7 +250,7 @@ function validate(x: LedgerInput) {
 function EditModal({ entry, onClose }: { entry: LedgerEntry; onClose: () => void }) {
   const [v, setV] = useState<LedgerInput>({
     date: entry.date, kind: entry.kind, category: entry.category, amount: entry.amount, memo: entry.memo, poolId: entry.poolId ?? null,
-    counterparty: entry.counterparty ?? '',
+    counterparty: entry.counterparty ?? '', attachments: entry.attachments ?? [],
   })
   const err = validate(v)
   return (
@@ -257,6 +263,7 @@ function EditModal({ entry, onClose }: { entry: LedgerEntry; onClose: () => void
           disabled={!!err}
           onClick={() => {
             saveLedgerEntry(clean(v), entry.id)
+            queueUploads(v.attachments)
             toast('保存しました')
             onClose()
           }}
@@ -268,7 +275,7 @@ function EditModal({ entry, onClose }: { entry: LedgerEntry; onClose: () => void
   )
 }
 
-function EntryForm({ value: v, onChange }: { value: LedgerInput; onChange: (v: LedgerInput) => void }) {
+function EntryForm({ value: v, onChange }: { value: LedgerInput; onChange: Dispatch<SetStateAction<LedgerInput>> }) {
   const { ledger, pools, cashFlows } = useStore()
   // 相手名の候補：キャッシュフローの相手 ＋ これまでに収支の記録で入力した相手（候補に無い名前も入力できる）
   const parties = [...new Set([...cashFlows, ...ledger].map((x) => x.counterparty ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'))
@@ -342,6 +349,14 @@ function EntryForm({ value: v, onChange }: { value: LedgerInput; onChange: (v: L
         メモ
         <input className="input" value={v.memo} placeholder="任意（支払先・内容など）" onChange={(e) => onChange({ ...v, memo: e.target.value })} />
       </label>
+      <div className="field full">
+        画像（レシートなど）
+        <AttachmentPicker
+          value={v.attachments ?? []}
+          onAdd={(list) => onChange((x) => ({ ...x, attachments: [...(x.attachments ?? []), ...list] }))}
+          onRemove={(id) => onChange((x) => ({ ...x, attachments: (x.attachments ?? []).filter((a) => a.id !== id) }))}
+        />
+      </div>
     </div>
   )
 }

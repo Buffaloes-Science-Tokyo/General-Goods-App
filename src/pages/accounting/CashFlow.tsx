@@ -1,13 +1,15 @@
-import { useState } from 'react'
+import { useState, type Dispatch, type SetStateAction } from 'react'
 import { deleteCashFlow, saveCashFlow, useStore, type CashFlowInput } from '../../store'
 import { dayKey, downloadText, toCsv, yen } from '../../format'
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, KIND_LABEL } from '../../accounting'
 import type { CashFlowEntry } from '../../types'
 import { Modal, NumberInput, toast, toastError } from '../../components/ui'
+import { AttachmentPicker, AttachmentsButton } from '../../components/Attachments'
+import { queueUploads } from '../../attachments'
 
 const today = () => dayKey(new Date())
 const blank = (kind: CashFlowEntry['kind'] = 'expense', date = today(), endDate: string | null = null): CashFlowInput => ({
-  date, endDate, kind, category: '', counterparty: '', amount: 0, memo: '',
+  date, endDate, kind, category: '', counterparty: '', amount: 0, memo: '', attachments: [],
 })
 /** 記録の最後の日（日付だけの記録はその日） */
 const lastDay = (x: Pick<CashFlowEntry, 'date' | 'endDate'>) => x.endDate || x.date
@@ -60,6 +62,7 @@ export function CashFlowPage() {
     const err = validate(draft)
     if (err) return toastError(err)
     saveCashFlow(clean(draft))
+    queueUploads(draft.attachments)
     toast(`${KIND_LABEL[draft.kind]} ${yen(draft.amount)} を記録しました`)
     // 続けて入力しやすいよう、日付（期間）と種類は残す
     setDraft(blank(draft.kind, draft.date, draft.endDate ?? null))
@@ -140,7 +143,10 @@ export function CashFlowPage() {
                     </td>
                     <td>{x.category}</td>
                     <td>{x.counterparty || <span className="muted">—</span>}</td>
-                    <td className="muted small">{x.memo}</td>
+                    <td className="muted small">
+                      {x.memo}
+                      <AttachmentsButton items={x.attachments} title={`${dateLabel(x)} ${x.category} の画像`} />
+                    </td>
                     <td className="r num" style={{ fontWeight: 600 }}>
                       {x.kind === 'expense' ? '−' : ''}
                       {yen(x.amount)}
@@ -229,6 +235,7 @@ const clean = (x: CashFlowInput): CashFlowInput => ({
 function EditModal({ entry, onClose }: { entry: CashFlowEntry; onClose: () => void }) {
   const [v, setV] = useState<CashFlowInput>({
     date: entry.date, endDate: entry.endDate ?? null, kind: entry.kind, category: entry.category, counterparty: entry.counterparty, amount: entry.amount, memo: entry.memo,
+    attachments: entry.attachments ?? [],
   })
   const err = validate(v)
   return (
@@ -241,6 +248,7 @@ function EditModal({ entry, onClose }: { entry: CashFlowEntry; onClose: () => vo
           disabled={!!err}
           onClick={() => {
             saveCashFlow(clean(v), entry.id)
+            queueUploads(v.attachments)
             toast('保存しました')
             onClose()
           }}
@@ -252,7 +260,7 @@ function EditModal({ entry, onClose }: { entry: CashFlowEntry; onClose: () => vo
   )
 }
 
-function CashFlowForm({ value: v, onChange }: { value: CashFlowInput; onChange: (v: CashFlowInput) => void }) {
+function CashFlowForm({ value: v, onChange }: { value: CashFlowInput; onChange: Dispatch<SetStateAction<CashFlowInput>> }) {
   const { cashFlows, ledger } = useStore()
   // 候補：よく使う科目 ＋ これまでに入力した科目（収支の記録・キャッシュフロー）
   const used = [...cashFlows, ...ledger].filter((x) => x.kind === v.kind).map((x) => x.category).filter(Boolean)
@@ -330,6 +338,14 @@ function CashFlowForm({ value: v, onChange }: { value: CashFlowInput; onChange: 
         メモ
         <input className="input" value={v.memo} placeholder="任意" onChange={(e) => onChange({ ...v, memo: e.target.value })} />
       </label>
+      <div className="field full">
+        画像（レシートなど）
+        <AttachmentPicker
+          value={v.attachments ?? []}
+          onAdd={(list) => onChange((x) => ({ ...x, attachments: [...(x.attachments ?? []), ...list] }))}
+          onRemove={(id) => onChange((x) => ({ ...x, attachments: (x.attachments ?? []).filter((a) => a.id !== id) }))}
+        />
+      </div>
     </div>
   )
 }
