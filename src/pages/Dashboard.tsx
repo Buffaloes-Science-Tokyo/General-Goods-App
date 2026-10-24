@@ -447,8 +447,12 @@ function ReportDialog({ initialChannel, onClose }: { initialChannel: ReportChann
   const [channel, setChannel] = useState<ReportChannel>(initialChannel)
   const [busy, setBusy] = useState(false)
 
+  // 全期間 = 最初の販売日〜今日
+  const firstDay = useMemo(() => sales.reduce((a, s) => (s.voided ? a : Math.min(a, new Date(s.at).getTime())), Date.now()), [sales])
+  const firstKey = dayKey(new Date(firstDay))
   const now = new Date()
   const presets: { label: string; from: string; to: string }[] = [
+    { label: '全期間', from: firstKey, to: today },
     { label: '今日', from: today, to: today },
     { label: '直近7日', from: shift(-6), to: today },
     { label: '直近30日', from: shift(-29), to: today },
@@ -456,16 +460,18 @@ function ReportDialog({ initialChannel, onClose }: { initialChannel: ReportChann
     { label: '先月', from: dayKey(new Date(now.getFullYear(), now.getMonth() - 1, 1)), to: dayKey(new Date(now.getFullYear(), now.getMonth(), 0)) },
   ]
   const invalid = !from || !to || from > to
+  // 最初の販売日以前から今日までなら全期間扱い（比べる前期間がない）
+  const allTime = from <= firstKey && to >= today
   const data = useMemo(
-    () => (invalid ? null : summarizeReport({ from, to, channel, shopName: settings.shopName, sales, products, stock, costing })),
-    [invalid, from, to, channel, settings.shopName, sales, products, stock, costing],
+    () => (invalid ? null : summarizeReport({ from, to, channel, allTime, shopName: settings.shopName, sales, products, stock, costing })),
+    [invalid, from, to, channel, allTime, settings.shopName, sales, products, stock, costing],
   )
 
   async function create() {
     if (!data) return
     setBusy(true)
     try {
-      await downloadSalesReport(data, `売上報告_${from === to ? from : `${from}_${to}`}.pptx`)
+      await downloadSalesReport(data, `売上報告_${allTime ? `全期間_${to}` : from === to ? from : `${from}_${to}`}.pptx`)
       toast('報告書を作成しました')
       onClose()
     } catch (e) {

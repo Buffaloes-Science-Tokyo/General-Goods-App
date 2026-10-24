@@ -18,6 +18,8 @@ export type ReportInput = {
   from: string
   to: string
   channel: ReportChannel
+  /** 全期間（最初の販売から）。前期間との比較はしない */
+  allTime?: boolean
   shopName: string
   sales: Sale[]
   products: Product[]
@@ -85,7 +87,7 @@ export function summarizeReport(input: ReportInput) {
     return t >= a && t < b
   }
   const sales = valid.filter((s) => inRange(s, start, endExclusive))
-  const prevSales = valid.filter((s) => inRange(s, prevStart, start))
+  const prevSales = input.allTime ? [] : valid.filter((s) => inRange(s, prevStart, start))
   const voided = input.sales.filter(
     (s) => s.voided && (input.channel === 'all' || channelOf(s) === input.channel) && inRange(s, start, endExclusive),
   ).length
@@ -93,9 +95,10 @@ export function summarizeReport(input: ReportInput) {
   const cur = totals(sales, costing)
   const prev = totals(prevSales, costing)
 
-  // 日別（1日だけのときは時間別）
+  // 日別（1日だけのときは時間別、2か月を超えるときは月別）
+  const trend: 'hour' | 'day' | 'month' = days === 1 ? 'hour' : days > 62 ? 'month' : 'day'
   const daily: Row[] = []
-  if (days === 1) {
+  if (trend === 'hour') {
     const hours = Array.from({ length: 24 }, (_, h) => ({ key: String(h), label: `${h}時`, revenue: 0, count: 0 }))
     sales.forEach((s) => {
       const b = hours[new Date(s.at).getHours()]
@@ -106,6 +109,20 @@ export function summarizeReport(input: ReportInput) {
     const from = Math.min(9, ...active)
     const to = Math.max(20, ...active)
     daily.push(...hours.slice(from, to + 1))
+  } else if (trend === 'month') {
+    const monthKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}`
+    const byMonth = new Map<string, Row>()
+    for (let d = new Date(start.getFullYear(), start.getMonth(), 1); d < endExclusive; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+      byMonth.set(monthKey(d), { key: monthKey(d), label: `${d.getFullYear()}/${d.getMonth() + 1}`, revenue: 0, count: 0 })
+    }
+    sales.forEach((s) => {
+      const r = byMonth.get(monthKey(new Date(s.at)))
+      if (r) {
+        r.revenue += s.total
+        r.count++
+      }
+    })
+    daily.push(...byMonth.values())
   } else {
     const byDay = new Map<string, Row>()
     for (let d = new Date(start); d < endExclusive; d = addDays(d, 1)) {
@@ -182,14 +199,15 @@ export function summarizeReport(input: ReportInput) {
   return {
     shopName: input.shopName,
     channel: input.channel,
-    periodLabel: days === 1 ? jpDate(start) : `${jpDate(start)} 〜 ${jpDate(addDays(endExclusive, -1))}`,
+    periodLabel: `${input.allTime ? '全期間：' : ''}${days === 1 ? jpDate(start) : `${jpDate(start)} 〜 ${jpDate(addDays(endExclusive, -1))}`}`,
     prevLabel: days === 1 ? jpDate(prevStart) : `${jpDate(prevStart)} 〜 ${jpDate(addDays(start, -1))}`,
+    allTime: !!input.allTime,
     days,
     cur,
     prev,
     voided,
     daily,
-    dailyIsHourly: days === 1,
+    trend,
     best,
     hours,
     productRows,
@@ -215,11 +233,13 @@ const C = {
   bad: 'D03B3B',
   series: ['2A78D6', 'EB6834', '1BAF7A', 'EDA100', 'E87BA4', '008300', '4A3AA7', 'E34948'],
 }
+const TREND_LABEL = { hour: '時間別', day: '日別', month: '月別' } as const
+const TREND_BEST = { hour: '最も売れた時間', day: '最も売れた日', month: '最も売れた月' } as const
 const FONT = 'Meiryo UI'
 const W = 13.333 // 16:9
 const M = 0.5
 
-function change(cur: number, prev: number) {
+function changeText(cur: number, prev: number) {
   if (!prev) return { text: '前期間 実績なし', color: C.muted }
   const r = (cur - prev) / prev
   return { text: `${r > 0 ? '▲' : r < 0 ? '▼' : '±'} ${Math.abs(r * 100).toFixed(1)}%  前期間比`, color: r > 0 ? C.good : r < 0 ? C.bad : C.muted }
@@ -269,17 +289,20 @@ export async function downloadSalesReport(data: ReportData, fileName: string) {
 
   // 2. サマリー
   {
-    const s = newSlide('サマリー', `比較：${data.prevLabel}`)
+    const s = newSlide('サマリー', data.allTime ? undefined : `比較：${data.prevLabel}`)
     const { cur, prev } = data
+    // 全期間は比べる前期間がないので比較を出さない
+    const change = (c: number, p: number) => (data.allTime ? { text: '', color: C.muted } : changeText(c, p))
+    const prevText = (text: string) => ({ text: data.allTime ? '' : text, color: C.muted })
     const tiles: { label: string; value: string; cmp: { text: string; color: string } }[] = [
       { label: '売上', value: yen(cur.revenue), cmp: change(cur.revenue, prev.revenue) },
       { label: '粗利', value: yen(cur.profit), cmp: change(cur.profit, prev.profit) },
-      { label: '粗利率', value: cur.revenue ? pct(cur.profit / cur.revenue) : '—', cmp: { text: prev.revenue ? `前期間 ${pct(prev.profit / prev.revenue)}` : '前期間 実績なし', color: C.muted } },
+      { label: '粗利率', value: cur.revenue ? pct(cur.profit / cur.revenue) : '—', cmp: prevText(prev.revenue ? `前期間 ${pct(prev.profit / prev.revenue)}` : '前期間 実績なし') },
       { label: '取引数', value: `${num(cur.count)}件`, cmp: change(cur.count, prev.count) },
       { label: '客単価', value: yen(cur.avg), cmp: change(cur.avg, prev.avg) },
       { label: '販売点数', value: `${num(cur.units)}点`, cmp: change(cur.units, prev.units) },
-      { label: '割引合計', value: yen(cur.discount), cmp: { text: `前期間 ${yen(prev.discount)}`, color: C.muted } },
-      { label: '手数料・発送費', value: yen(cur.expenses), cmp: { text: `前期間 ${yen(prev.expenses)}`, color: C.muted } },
+      { label: '割引合計', value: yen(cur.discount), cmp: prevText(`前期間 ${yen(prev.discount)}`) },
+      { label: '手数料・発送費', value: yen(cur.expenses), cmp: prevText(`前期間 ${yen(prev.expenses)}`) },
     ]
     const cols = 4
     const gap = 0.25
@@ -294,7 +317,7 @@ export async function downloadSalesReport(data: ReportData, fileName: string) {
       s.addText(t.cmp.text, { x: x + 0.2, y: y + 1.45, w: tw - 0.4, h: 0.4, fontFace: FONT, fontSize: 12, color: t.cmp.color })
     })
     const notes = [
-      data.best && data.best.revenue > 0 ? `${data.dailyIsHourly ? '最も売れた時間' : '最も売れた日'}：${data.best.label}（${yen(data.best.revenue)}・${data.best.count}件）` : '',
+      data.best && data.best.revenue > 0 ? `${TREND_BEST[data.trend]}：${data.best.label}（${yen(data.best.revenue)}・${data.best.count}件）` : '',
       data.voided ? `取消 ${data.voided}件は集計から除いています` : '',
     ].filter(Boolean)
     if (notes.length) s.addText(notes.join('　／　'), { x: M, y: 6.55, w: W - 2 * M, h: 0.4, fontFace: FONT, fontSize: 12, color: C.ink2 })
@@ -302,7 +325,7 @@ export async function downloadSalesReport(data: ReportData, fileName: string) {
 
   // 3. 売上の推移
   {
-    const s = newSlide(`売上の推移（${data.dailyIsHourly ? '時間別' : '日別'}）`)
+    const s = newSlide(`売上の推移（${TREND_LABEL[data.trend]}）`)
     if (!data.cur.count) empty(s)
     else
       s.addChart(
@@ -383,7 +406,7 @@ export async function downloadSalesReport(data: ReportData, fileName: string) {
   }
 
   // 6. 時間帯別（複数日のときのみ。1日なら推移が時間別なので省略）
-  if (!data.dailyIsHourly) {
+  if (data.trend !== 'hour') {
     const s = newSlide('時間帯別の売上', '期間合計')
     if (!data.hours.length) empty(s)
     else
